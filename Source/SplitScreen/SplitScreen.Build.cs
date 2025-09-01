@@ -8,7 +8,7 @@ public class SplitScreen : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
-        PublicIncludePaths.AddRange(new string[] { "SplitScreen" });
+        // PublicIncludePaths.AddRange(new string[] { "SplitScreen" });
 
         PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput" });
 	}
