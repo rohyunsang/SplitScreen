@@ -9,12 +9,17 @@
 #include "Engine/World.h"
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerController.h"
-#include "HAL/PlatformMisc.h" 
+#include "HAL/PlatformMisc.h" // FPlatformUserId 사용을 위해 추가
+#include "TimerManager.h" // GetWorldTimerManager() 사용을 위해
+
 
 ASSGameMode::ASSGameMode()
 {
     // 기본 클래스들 설정
     PlayerControllerClass = ASSPlayerController::StaticClass();
+
+    // 더미 스펙테이터 폰 클래스 설정
+    DummySpectatorPawnClass = ASSDummySpectatorPawn::StaticClass();
 
     // set default pawn class to our Blueprinted character
     static ConstructorHelpers::FClassFinder<APawn> PlayerPawnBPClass(TEXT("/Game/ThirdPerson/Blueprints/BP_ThirdPersonCharacter"));
@@ -22,9 +27,6 @@ ASSGameMode::ASSGameMode()
     {
         DefaultPawnClass = PlayerPawnBPClass.Class;
     }
-
-    // 더미 스펙테이터 폰 클래스 설정
-    DummySpectatorPawnClass = ASSDummySpectatorPawn::StaticClass();
 }
 
 void ASSGameMode::BeginPlay()
@@ -44,15 +46,28 @@ void ASSGameMode::BeginPlay()
 void ASSGameMode::PostLogin(APlayerController* NewPlayer)
 {
     Super::PostLogin(NewPlayer);
-
     ConnectedPlayers.AddUnique(NewPlayer);
 
-    UE_LOG(LogTemp, Warning, TEXT("SS Player Connected. Total Players: %d"), ConnectedPlayers.Num());
+    FString NetModeString = GetWorld()->GetNetMode() == NM_ListenServer ? TEXT("ListenServer") : TEXT("Client");
+    UE_LOG(LogTemp, Warning, TEXT("SS Player Connected. Total Players: %d, NetMode: %s"),
+        ConnectedPlayers.Num(), *NetModeString);
 
-    // 두 번째 플레이어가 접속하면 스플릿 스크린 설정
-    if (ConnectedPlayers.Num() >= 2 && bAutoEnableSplitScreen)
+    if (bAutoEnableSplitScreen)
     {
-        SetupOnlineSplitScreen();
+        if (GetWorld()->GetNetMode() == NM_ListenServer)
+        {
+            // 서버: 실제 2명이 있을 때
+            if (ConnectedPlayers.Num() >= 2)
+            {
+                SetupOnlineSplitScreen();
+            }
+        }
+        else if (GetWorld()->GetNetMode() == NM_Client)
+        {
+            // 클라이언트: 자신이 접속하면 바로 실행
+            // (서버에서 복제된 다른 플레이어를 볼 준비)
+            SetupOnlineSplitScreen();
+        }
     }
 }
 
@@ -81,9 +96,11 @@ void ASSGameMode::SetupOnlineSplitScreen()
     // 주기적으로 더미 플레이어 위치 동기화
     GetWorldTimerManager().SetTimer(
         SyncTimerHandle,
-        this,
-        &ASSGameMode::SyncDummyPlayerWithRemotePlayer,
-        0.1f, // 10fps로 동기화
+        [this]()
+        {
+            SyncDummyPlayerWithRemotePlayer();
+        },
+        0.033f, // 30fps
         true
     );
 }
@@ -99,10 +116,10 @@ void ASSGameMode::CreateDummyLocalPlayer()
     if (CurrentLocalPlayers >= 2)
     {
         UE_LOG(LogTemp, Warning, TEXT("SS Already have 2+ local players"));
-        return;
+        // return;
     }
 
-    // 더미 로컬 플레이어 생성 // 수정 (언리얼 5 방식)  
+    // 더미 로컬 플레이어 생성
     FPlatformUserId DummyUserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(1);
     FString OutError;
     ULocalPlayer* DummyLocalPlayer = GameInstance->CreateLocalPlayer(DummyUserId, OutError, true);
@@ -111,6 +128,10 @@ void ASSGameMode::CreateDummyLocalPlayer()
     {
         UE_LOG(LogTemp, Error, TEXT("SS Failed to create dummy local player"));
         return;
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("SS Success to create dummy local player"));
     }
 
     // 더미 스펙테이터 폰 생성
@@ -148,10 +169,8 @@ void ASSGameMode::SyncDummyPlayerWithRemotePlayer()
 {
     if (!DummySpectatorPawn || ConnectedPlayers.Num() < 2) return;
 
-    // 두 번째 플레이어 (원격 플레이어)의 위치를 더미 플레이어에 동기화
+    // 원격 플레이어 찾기
     APlayerController* RemotePlayer = nullptr;
-
-    // 첫 번째가 아닌 플레이어 찾기
     for (int32 i = 1; i < ConnectedPlayers.Num(); i++)
     {
         if (ConnectedPlayers[i] && ConnectedPlayers[i] != DummyPlayerController)
@@ -164,10 +183,49 @@ void ASSGameMode::SyncDummyPlayerWithRemotePlayer()
     if (!RemotePlayer || !RemotePlayer->GetPawn()) return;
 
     APawn* RemotePawn = RemotePlayer->GetPawn();
-    DummySpectatorPawn->SyncWithRemotePlayer(
-        RemotePawn->GetActorLocation(),
-        RemotePawn->GetActorRotation()
-    );
+    UCameraComponent* RemoteCamera = RemotePawn->FindComponentByClass<UCameraComponent>();
+
+    if (RemoteCamera && DummySpectatorPawn->bSyncDirectlyToCamera)
+    {
+        // 목표 위치와 회전
+        FVector TargetLocation = RemoteCamera->GetComponentLocation();
+        FRotator TargetRotation = RemoteCamera->GetComponentRotation();
+
+        // 현재 위치와 회전
+        FVector CurrentLocation = DummySpectatorPawn->GetActorLocation();
+        FRotator CurrentRotation = DummySpectatorPawn->GetActorRotation();
+
+        // 보간 속도 (값이 클수록 빠르게 따라감)
+        float InterpSpeed = 30.0f; // 조정 가능
+        float RotationInterpSpeed = 30.0f; // 회전은 조금 더 느리게
+
+        // 거리 체크 - 너무 멀면 즉시 이동
+        float Distance = FVector::Dist(CurrentLocation, TargetLocation);
+        if (Distance > 500.0f) // 5미터 이상 차이나면 즉시 이동
+        {
+            DummySpectatorPawn->SetActorLocation(TargetLocation);
+            DummySpectatorPawn->SetActorRotation(TargetRotation);
+        }
+        else
+        {
+            // 부드럽게 보간
+            FVector NewLocation = FMath::VInterpTo(CurrentLocation, TargetLocation, GetWorld()->GetDeltaSeconds(), InterpSpeed);
+            FRotator NewRotation = FMath::RInterpTo(CurrentRotation, TargetRotation, GetWorld()->GetDeltaSeconds(), RotationInterpSpeed);
+
+            DummySpectatorPawn->SetActorLocation(NewLocation);
+            DummySpectatorPawn->SetActorRotation(NewRotation);
+        }
+
+        // 컨트롤러 회전도 보간
+        if (DummyPlayerController)
+        {
+            FRotator ControlRotation = RemotePlayer->GetControlRotation();
+            FRotator CurrentControlRotation = DummyPlayerController->GetControlRotation();
+            FRotator NewControlRotation = FMath::RInterpTo(CurrentControlRotation, ControlRotation, GetWorld()->GetDeltaSeconds(), RotationInterpSpeed);
+            DummyPlayerController->SetControlRotation(NewControlRotation);
+        }
+    }
+    
 }
 
 void ASSGameMode::UpdateSplitScreenLayout()

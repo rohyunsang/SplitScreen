@@ -60,5 +60,5 @@ bool ASSPlayerController::ServerUpdatePlayerLocation_Validate(FVector Location, 
 void ASSPlayerController::ClientReceiveRemotePlayerLocation_Implementation(FVector Location, FRotator Rotation)
 {
     // 받은 원격 플레이어 위치 정보 로그
-    UE_LOG(LogTemp, Log, TEXT("SS Received remote player location: %s"), *Location.ToString());
+    // UE_LOG(LogTemp, Log, TEXT("SS Received remote player location: %s"), *Location.ToString());
 }

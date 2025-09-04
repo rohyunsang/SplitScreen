@@ -33,9 +33,11 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Split Screen")
     bool IsSplitScreenEnabled() const { return bSplitScreenActive; }
 
+    void SetupSplitScreenViewport();
+
 private:
     bool bSplitScreenActive = false;
-    void SetupSplitScreenViewport();
+    
 
 private:
     FTimerHandle SplitScreenTimerHandle;
