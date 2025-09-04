@@ -55,4 +55,8 @@ private:
     ASSDummySpectatorPawn* ClientDummyPawn;
 
     FTimerHandle ClientSyncTimerHandle;
+
+public:
+    UPROPERTY() 
+    TWeakObjectPtr<class ASSCameraViewProxy> CachedProxy;
 };

@@ -9,6 +9,10 @@
 #include "SSDummySpectatorPawn.h"
 #include "Camera/CameraComponent.h"
 #include "HAL/PlatformMisc.h"
+#include "EngineUtils.h"
+#include "GameFramework/Character.h"
+#include "SSCameraViewProxy.h"
+
 
 void ASSPlayerController::BeginPlay()
 {
@@ -159,46 +163,51 @@ void ASSPlayerController::SyncClientDummyWithRemotePlayer(ASSDummySpectatorPawn*
 {
     if (!DummyPawn) return;
 
-    // 방법 1: PlayerController를 통해 Pawn 찾기
-    for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+    // 1) 프록시를 못 찾았다면 한 번만 스캔해서 캐시
+    ASSCameraViewProxy* Proxy = CachedProxy.Get();
+    if (!Proxy)
     {
-        APlayerController* PC = It->Get();
-        if (PC && PC != this && !PC->IsLocalController())
+        for (TActorIterator<ASSCameraViewProxy> It(GetWorld()); It; ++It)
         {
-            APawn* RemotePawn = PC->GetPawn();
-            if (RemotePawn && RemotePawn != DummyPawn)
-            {
-                // 원격 플레이어의 카메라 찾기
-                UCameraComponent* RemoteCamera = RemotePawn->FindComponentByClass<UCameraComponent>();
-                if (RemoteCamera)
-                {
-                    // 카메라 위치와 회전 동기화
-                    FVector TargetLocation = RemoteCamera->GetComponentLocation();
-                    FRotator TargetRotation = RemoteCamera->GetComponentRotation();
-
-                    FVector CurrentLocation = DummyPawn->GetActorLocation();
-                    FRotator CurrentRotation = DummyPawn->GetActorRotation();
-
-                    float InterpSpeed = 15.0f;
-                    float Distance = FVector::Dist(CurrentLocation, TargetLocation);
-
-                    if (Distance > 500.0f)
-                    {
-                        DummyPawn->SetActorLocation(TargetLocation);
-                        DummyPawn->SetActorRotation(TargetRotation);
-                    }
-                    else
-                    {
-                        FVector NewLocation = FMath::VInterpTo(CurrentLocation, TargetLocation, GetWorld()->GetDeltaSeconds(), InterpSpeed);
-                        FRotator NewRotation = FMath::RInterpTo(CurrentRotation, TargetRotation, GetWorld()->GetDeltaSeconds(), InterpSpeed);
-
-                        DummyPawn->SetActorLocation(NewLocation);
-                        DummyPawn->SetActorRotation(NewRotation);
-                    }
-                }
-                break; // 첫 번째 원격 플레이어만 사용
-            }
+            Proxy = *It;
+            break; // 첫 번째만 사용
         }
+        if (!Proxy) return;
+        CachedProxy = Proxy;
+        UE_LOG(LogTemp, Warning, TEXT("SS Cached ServerCamProxy on client"));
+    }
+
+    // 2) 복제된 서버 화면 시점(위치/회전/FOV) 가져오기
+    const FRepCamInfo& View = Proxy->GetReplicatedCamera();
+
+    // 3) 더미 스펙테이터 이동/회전 보간 (GameMode와 동일 룰)
+    const float Dt = GetWorld()->GetDeltaSeconds();
+    const float MoveSpd = 30.f, RotSpd = 30.f;
+
+    const float Dist = FVector::Dist(DummyPawn->GetActorLocation(), View.Location);
+    if (Dist > 500.f)
+    {
+        DummyPawn->SetActorLocation(View.Location);
+        DummyPawn->SetActorRotation(View.Rotation);
+    }
+    else
+    {
+        DummyPawn->SetActorLocation(FMath::VInterpTo(DummyPawn->GetActorLocation(), View.Location, Dt, MoveSpd));
+        DummyPawn->SetActorRotation(FMath::RInterpTo(DummyPawn->GetActorRotation(), View.Rotation, Dt, RotSpd));
+    }
+
+    // 4) 더미 컨트롤러의 ControlRotation도 보간
+    if (APlayerController* DPC = Cast<APlayerController>(DummyPawn->GetController()))
+    {
+        const FRotator NewCtrlRot = FMath::RInterpTo(DPC->GetControlRotation(), View.Rotation, Dt, RotSpd);
+        DPC->SetControlRotation(NewCtrlRot);
+    }
+
+    // 5) FOV 동기화 (더미 카메라가 컨트롤러 회전을 사용하도록 설정돼 있어야 함)
+    if (UCameraComponent* Cam = DummyPawn->FindComponentByClass<UCameraComponent>())
+    {
+        Cam->SetFieldOfView(View.FOV);
+        // 필요 시 PostProcess 등 추가 동기화 가능
     }
 }
 

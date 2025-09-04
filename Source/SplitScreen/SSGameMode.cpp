@@ -11,6 +11,8 @@
 #include "GameFramework/PlayerController.h"
 #include "HAL/PlatformMisc.h" // FPlatformUserId 사용을 위해 추가
 #include "TimerManager.h" // GetWorldTimerManager() 사용을 위해
+#include "SSCameraViewProxy.h"
+#include "Kismet/GameplayStatics.h"
 
 
 ASSGameMode::ASSGameMode()
@@ -115,6 +117,22 @@ void ASSGameMode::SetupOnlineSplitScreen()
     else
     {
         UE_LOG(LogTemp, Error, TEXT("SS Split screen setup failed"));
+    }
+
+    // 1) 프록시가 없으면 생성
+    if (!ServerCamProxy)
+    {
+        FActorSpawnParameters Params;
+        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+        ServerCamProxy = GetWorld()->SpawnActor<ASSCameraViewProxy>(ASSCameraViewProxy::StaticClass(), FTransform::Identity, Params);
+        UE_LOG(LogTemp, Warning, TEXT("SS Created ServerCamProxy"));
+    }
+
+    // 2) 서버 로컬 플레이어(리슨 서버)의 카메라를 소스로 지정
+    if (ServerCamProxy && HasAuthority())
+    {
+        // 0번 인덱스 PC = 리슨서버의 화면
+        ServerCamProxy->SetSourceFromPlayerIndex(0);
     }
 }
 
@@ -239,7 +257,6 @@ void ASSGameMode::SyncDummyPlayerWithRemotePlayer()
             DummyPlayerController->SetControlRotation(NewControlRotation);
         }
     }
-    
 }
 
 void ASSGameMode::UpdateSplitScreenLayout()

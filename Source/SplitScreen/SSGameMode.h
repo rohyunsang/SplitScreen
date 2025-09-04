@@ -42,4 +42,9 @@ private:
     void SyncDummyPlayerWithRemotePlayer();
 
     FTimerHandle SyncTimerHandle;
+
+
+public:
+    UPROPERTY() // GC º¸È£
+    class ASSCameraViewProxy* ServerCamProxy = nullptr;
 };
