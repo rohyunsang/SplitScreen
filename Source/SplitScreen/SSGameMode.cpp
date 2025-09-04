@@ -42,31 +42,28 @@ void ASSGameMode::BeginPlay()
         }
     }
 }
-
 void ASSGameMode::PostLogin(APlayerController* NewPlayer)
 {
     Super::PostLogin(NewPlayer);
     ConnectedPlayers.AddUnique(NewPlayer);
 
     FString NetModeString = GetWorld()->GetNetMode() == NM_ListenServer ? TEXT("ListenServer") : TEXT("Client");
-    UE_LOG(LogTemp, Warning, TEXT("SS Player Connected. Total Players: %d, NetMode: %s"),
-        ConnectedPlayers.Num(), *NetModeString);
+    UE_LOG(LogTemp, Warning, TEXT("SS PostLogin: %s, LocalController: %s, Total: %d, NetMode: %s"),
+        *NewPlayer->GetName(),
+        NewPlayer->IsLocalController() ? TEXT("Yes") : TEXT("No"),
+        ConnectedPlayers.Num(),
+        *NetModeString);
 
     if (bAutoEnableSplitScreen)
     {
         if (GetWorld()->GetNetMode() == NM_ListenServer)
         {
-            // 서버: 실제 2명이 있을 때
-            if (ConnectedPlayers.Num() >= 2)
+            // 정확히 2명일 때만 실행 (중복 방지)
+            if (ConnectedPlayers.Num() == 2 && !DummyPlayerController)
             {
+                UE_LOG(LogTemp, Warning, TEXT("SS Starting split screen setup..."));
                 SetupOnlineSplitScreen();
             }
-        }
-        else if (GetWorld()->GetNetMode() == NM_Client)
-        {
-            // 클라이언트: 자신이 접속하면 바로 실행
-            // (서버에서 복제된 다른 플레이어를 볼 준비)
-            SetupOnlineSplitScreen();
         }
     }
 }
@@ -85,24 +82,40 @@ void ASSGameMode::Logout(AController* Exiting)
 void ASSGameMode::SetupOnlineSplitScreen()
 {
     USSGameInstance* SSGI = Cast<USSGameInstance>(GetGameInstance());
-    if (!SSGI || !SSGI->IsSplitScreenEnabled()) return;
+    if (!SSGI || !SSGI->IsSplitScreenEnabled())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS Split screen not enabled in game instance"));
+        return;
+    }
 
-    // 이미 설정되어 있으면 리턴
-    if (DummyPlayerController) return;
+    // 이미 완전히 설정되어 있으면 리턴
+    if (DummyPlayerController && DummySpectatorPawn &&
+        DummyPlayerController->GetLocalPlayer())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS Split screen already fully setup"));
+        return;
+    }
+
+    UE_LOG(LogTemp, Warning, TEXT("SS Setting up online split screen..."));
 
     CreateDummyLocalPlayer();
     UpdateSplitScreenLayout();
 
-    // 주기적으로 더미 플레이어 위치 동기화
-    GetWorldTimerManager().SetTimer(
-        SyncTimerHandle,
-        [this]()
-        {
-            SyncDummyPlayerWithRemotePlayer();
-        },
-        0.033f, // 30fps
-        true
-    );
+    // 성공한 경우에만 동기화 시작
+    if (DummyPlayerController && DummySpectatorPawn)
+    {
+        GetWorldTimerManager().SetTimer(
+            SyncTimerHandle,
+            [this]() { SyncDummyPlayerWithRemotePlayer(); },
+            0.033f,
+            true
+        );
+        UE_LOG(LogTemp, Warning, TEXT("SS Split screen setup completed successfully"));
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("SS Split screen setup failed"));
+    }
 }
 
 void ASSGameMode::CreateDummyLocalPlayer()
@@ -122,7 +135,7 @@ void ASSGameMode::CreateDummyLocalPlayer()
     // 더미 로컬 플레이어 생성
     FPlatformUserId DummyUserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(1);
     FString OutError;
-    ULocalPlayer* DummyLocalPlayer = GameInstance->CreateLocalPlayer(DummyUserId, OutError, true);
+    ULocalPlayer* DummyLocalPlayer = GameInstance->CreateLocalPlayer(DummyUserId, OutError, false);
 
     if (!DummyLocalPlayer)
     {
@@ -131,7 +144,7 @@ void ASSGameMode::CreateDummyLocalPlayer()
     }
     else
     {
-        UE_LOG(LogTemp, Error, TEXT("SS Success to create dummy local player"));
+        UE_LOG(LogTemp, Warning, TEXT("SS Success to create dummy local player"));
     }
 
     // 더미 스펙테이터 폰 생성
@@ -154,14 +167,15 @@ void ASSGameMode::CreateDummyLocalPlayer()
     DummyPlayerController = GetWorld()->SpawnActor<ASSPlayerController>();
     if (DummyPlayerController)
     {
+        // 더미로 표시
+        DummyPlayerController->SetAsDummyController(true);
+
+        DummyPlayerController->SetPawn(nullptr);
+        
         DummyPlayerController->SetPlayer(DummyLocalPlayer);
         DummyPlayerController->Possess(DummySpectatorPawn);
 
         UE_LOG(LogTemp, Warning, TEXT("SS Dummy Local Player Created Successfully"));
-    }
-    else
-    {
-        UE_LOG(LogTemp, Error, TEXT("SS Failed to create dummy player controller"));
     }
 }
 
