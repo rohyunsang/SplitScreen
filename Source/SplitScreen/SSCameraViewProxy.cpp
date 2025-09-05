@@ -5,6 +5,7 @@
 #include "Net/UnrealNetwork.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerController.h"
+#include "SSPlayerController.h"
 // #include "GameFramework/PlayerCameraManager.h"
 
 ASSCameraViewProxy::ASSCameraViewProxy()
@@ -57,15 +58,22 @@ void ASSCameraViewProxy::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
 
-    // 서버에서만 카메라 정보를 채워 복제
-    if (!HasAuthority())
+    if (HasAuthority())
     {
-        return;
+        // 서버에서만 카메라 정보 업데이트
+        UpdateServerCamera();
     }
+    else
+    {
+        // 클라이언트에서 복제된 카메라 정보 적용
+        ApplyReplicatedCamera();
+    }
+}
 
+void ASSCameraViewProxy::UpdateServerCamera()
+{
     APlayerController* PC = SourcePC.Get();
 
-    // 소스가 비었으면 0번 플레이어(리슨서버 로컬)로 자동 설정 시도
     if (!PC)
     {
         if (UWorld* World = GetWorld())
@@ -77,15 +85,53 @@ void ASSCameraViewProxy::Tick(float DeltaSeconds)
 
     if (PC && PC->PlayerCameraManager)
     {
-        // 서버가 실제 보고 있는 화면 시점(FMinimalViewInfo)을 가져온다.
         const FMinimalViewInfo POV = PC->PlayerCameraManager->GetCameraCacheView();
-
         RepCam.Location = POV.Location;
         RepCam.Rotation = POV.Rotation;
         RepCam.FOV = POV.FOV;
+    }
+}
 
-        // 필요 시 네트 갱신(빈번한 호출은 트래픽 증가 → 빈도는 상황 맞춰 조절)
-        // NetUpdateFrequency로 충분하면 생략해도 됨
-        // ForceNetUpdate();
+void ASSCameraViewProxy::ApplyReplicatedCamera()
+{
+    // 클라이언트에서 더미 컨트롤러의 카메라에 서버 카메라 정보 적용
+    if (UWorld* World = GetWorld())
+    {
+        // 더미 컨트롤러 찾기 (SSPlayerController에서 관리하는 ClientDummyController)
+        for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+        {
+            if (ASSPlayerController* SSPC = Cast<ASSPlayerController>(It->Get()))
+            {
+                // 더미 컨트롤러이고 스펙테이터 모드인 경우
+                if (SSPC->bIsDummyController && SSPC->GetStateName() == NAME_Spectating)
+                {
+                    if (SSPC->PlayerCameraManager)
+                    {
+                        // 카메라 위치와 회전을 서버와 동기화
+                        SSPC->PlayerCameraManager->SetViewTarget(this);
+
+                        // 또는 직접 카메라 위치/회전 설정
+                        SSPC->SetControlRotation(RepCam.Rotation);
+
+                        // FOV도 동기화
+                        if (SSPC->PlayerCameraManager)
+                        {
+                            SSPC->PlayerCameraManager->SetFOV(RepCam.FOV);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// RepCam이 변경될 때 호출되는 함수 (선택사항)
+void ASSCameraViewProxy::OnRep_RepCam()
+{
+    // 복제된 카메라 정보가 업데이트될 때 즉시 적용
+    if (!HasAuthority())
+    {
+        ApplyReplicatedCamera();
     }
 }

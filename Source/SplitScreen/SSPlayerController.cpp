@@ -1,22 +1,31 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
-
 #include "SSPlayerController.h"
 #include "SSGameMode.h"
 #include "SSGameInstance.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
-#include "SSDummySpectatorPawn.h"
-#include "Camera/CameraComponent.h"
+#include "GameFramework/SpectatorPawn.h"
+#include "Engine/Engine.h"
 #include "HAL/PlatformMisc.h"
 #include "EngineUtils.h"
 #include "GameFramework/Character.h"
-#include "SSCameraViewProxy.h"
+#include "Kismet/GameplayStatics.h"
+#include "GameFramework/GameStateBase.h"
+#include "GameFramework/PlayerState.h"
+#include "Net/UnrealNetwork.h"  // 꼭 필요
 
+void ASSPlayerController::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME(ASSPlayerController, RepCam);   // RepCam 등록
+}
 
 void ASSPlayerController::BeginPlay()
 {
     Super::BeginPlay();
+
+    if (HasAuthority()) return;
 
     if (!bIsDummyController)
     {
@@ -28,7 +37,6 @@ void ASSPlayerController::BeginPlay()
         {
             UE_LOG(LogTemp, Warning, TEXT("SS Client detected - Setting up split screen"));
 
-            // 이미 설정이 완료되었는지 체크
             if (bClientSplitScreenSetupComplete)
             {
                 UE_LOG(LogTemp, Warning, TEXT("SS Client split screen already setup, skipping"));
@@ -41,18 +49,18 @@ void ASSPlayerController::BeginPlay()
                 SSGI->EnableSplitScreen();
             }
 
-            // 더미 로컬 플레이어 생성 (한 번만)
+            // 더미 컨트롤러 생성 및 스펙테이터 설정
             FTimerHandle ClientSetupHandle;
             GetWorldTimerManager().SetTimer(
                 ClientSetupHandle,
                 [this]()
                 {
-                    if (!bClientSplitScreenSetupComplete) // 다시 한번 체크
+                    if (!bClientSplitScreenSetupComplete)
                     {
                         SetupClientSplitScreen();
                     }
                 },
-                2.0f, // 2초 지연
+                2.0f,
                 false
             );
         }
@@ -61,14 +69,13 @@ void ASSPlayerController::BeginPlay()
 
 void ASSPlayerController::SetupClientSplitScreen()
 {
-    // 이미 설정 완료된 경우 리턴
     if (bClientSplitScreenSetupComplete)
     {
         UE_LOG(LogTemp, Warning, TEXT("SS Client split screen setup already complete"));
         return;
     }
 
-    UE_LOG(LogTemp, Warning, TEXT("SS Setting up client split screen"));
+    UE_LOG(LogTemp, Warning, TEXT("SS Setting up client split screen with spectator mode"));
 
     UGameInstance* GameInstance = GetGameInstance();
     if (!GameInstance) return;
@@ -80,13 +87,11 @@ void ASSPlayerController::SetupClientSplitScreen()
     {
         UE_LOG(LogTemp, Warning, TEXT("SS Client already has 2+ local players"));
 
-        // 이미 LocalPlayer가 있다면 더미 폰만 생성 (한 번만)
-        if (!ClientDummyPawn)
+        if (!ClientDummyController)
         {
-            CreateClientDummyPawn();
+            CreateClientDummyController();
         }
 
-        // 설정 완료 플래그 설정
         bClientSplitScreenSetupComplete = true;
         return;
     }
@@ -99,10 +104,7 @@ void ASSPlayerController::SetupClientSplitScreen()
     if (DummyLocalPlayer)
     {
         UE_LOG(LogTemp, Warning, TEXT("SS Client dummy local player created successfully"));
-        // LocalPlayer 생성 성공 후 더미 폰 생성
-        CreateClientDummyPawn();
-
-        // 설정 완료 플래그 설정
+        CreateClientDummyController();
         bClientSplitScreenSetupComplete = true;
     }
     else
@@ -111,335 +113,225 @@ void ASSPlayerController::SetupClientSplitScreen()
     }
 }
 
-// SSPlayerController.cpp - CreateClientDummyPawn 함수 수정
-void ASSPlayerController::CreateClientDummyPawn()
+void ASSPlayerController::CreateClientDummyController()
 {
-    UE_LOG(LogTemp, Warning, TEXT("SS Creating client dummy pawn"));
+    UE_LOG(LogTemp, Warning, TEXT("SS Creating client dummy controller for spectator mode"));
 
-    // 이미 더미 폰이 있다면 리턴
-    if (ClientDummyPawn && IsValid(ClientDummyPawn))
+    // 기존 더미 컨트롤러 찾기
+    for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
     {
-        UE_LOG(LogTemp, Warning, TEXT("SS Client dummy pawn already exists and is valid"));
+        ASSPlayerController* PC = Cast<ASSPlayerController>(It->Get());
+        if (PC && PC->bIsDummyController && PC != this)
+        {
+            ClientDummyController = PC;
+            UE_LOG(LogTemp, Warning, TEXT("SS Found existing dummy controller: %s"), *PC->GetName());
+            SetupSpectatorForDummyController();
+            return;
+        }
+    }
+
+    // 새 더미 컨트롤러 생성
+    UGameInstance* GameInstance = GetGameInstance();
+    if (GameInstance && GameInstance->GetNumLocalPlayers() >= 2)
+    {
+        ULocalPlayer* SecondLocalPlayer = GameInstance->GetLocalPlayerByIndex(1);
+        if (SecondLocalPlayer)
+        {
+            if (!SecondLocalPlayer->PlayerController)
+            {
+                // 새 컨트롤러 생성
+                ClientDummyController = GetWorld()->SpawnActor<ASSPlayerController>();
+                if (ClientDummyController)
+                {
+                    Cast<ASSPlayerController>(ClientDummyController)->SetAsDummyController(true);
+                    ClientDummyController->SetPlayer(SecondLocalPlayer);
+                    UE_LOG(LogTemp, Warning, TEXT("SS New dummy controller created: %s"), *ClientDummyController->GetName());
+                }
+            }
+            else
+            {
+                // 기존 컨트롤러 사용
+                ClientDummyController = SecondLocalPlayer->PlayerController;
+                if (ASSPlayerController* SSPC = Cast<ASSPlayerController>(ClientDummyController))
+                {
+                    SSPC->SetAsDummyController(true);
+                }
+            }
+
+            SetupSpectatorForDummyController();
+        }
+    }
+}
+
+void ASSPlayerController::SetupSpectatorForDummyController()
+{
+    if (!ClientDummyController)
+    {
+        UE_LOG(LogTemp, Error, TEXT("SS Cannot setup spectator - dummy controller is null"));
         return;
     }
 
-    FVector DummySpawnLocation = FVector(0, 0, 200);
-    FRotator DummySpawnRotation = FRotator::ZeroRotator;
+    UE_LOG(LogTemp, Warning, TEXT("SS Setting up spectator mode for dummy controller"));
 
-    ClientDummyPawn = GetWorld()->SpawnActor<ASSDummySpectatorPawn>(
-        ASSDummySpectatorPawn::StaticClass(),
-        DummySpawnLocation,
-        DummySpawnRotation
-    );
+    // 더미 컨트롤러를 스펙테이터 모드로 전환
+    ClientDummyController->ChangeState(NAME_Spectating);
 
-    if (ClientDummyPawn)
+    // CameraViewProxy 찾기 또는 생성
+    ASSCameraViewProxy* CameraProxy = nullptr;
+
+    // 기존 CameraProxy 찾기
+    for (TActorIterator<ASSCameraViewProxy> ActorIterator(GetWorld()); ActorIterator; ++ActorIterator)
     {
-        UE_LOG(LogTemp, Warning, TEXT("SS Client dummy pawn created successfully"));
+        CameraProxy = *ActorIterator;
+        break;
+    }
 
-        // *** 중요: 더미 컨트롤러를 새로 생성하지 않고 기존 것 활용 ***
+    // CameraProxy를 뷰 타겟으로 설정
+    if (CameraProxy)
+    {
+        ClientDummyController->SetViewTargetWithBlend(CameraProxy, SpectatorBlendTime);
+        UE_LOG(LogTemp, Warning, TEXT("SS Dummy controller now following camera proxy"));
+    }
+    else
+    {
+        // 기존 방식으로 fallback
+        APawn* RemotePlayerPawn = FindRemotePlayerPawn();
+        if (RemotePlayerPawn)
+        {
+            ClientDummyController->SetViewTargetWithBlend(RemotePlayerPawn, SpectatorBlendTime);
+            CurrentSpectatorTarget = RemotePlayerPawn;
+            UE_LOG(LogTemp, Warning, TEXT("SS Dummy controller now spectating: %s"), *RemotePlayerPawn->GetName());
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("SS No camera proxy or remote player found, will retry"));
 
-        // 1) 먼저 기존 더미 컨트롤러 찾기
-        ASSPlayerController* ExistingDummyController = nullptr;
+            // 재시도 로직...
+            FTimerHandle RetryHandle;
+            GetWorldTimerManager().SetTimer(
+                RetryHandle,
+                [this]()
+                {
+                    SetupSpectatorForDummyController();
+                },
+                1.0f,
+                false
+            );
+        }
+    }
+}
+
+void ASSPlayerController::SetupSpectatorMode(APlayerController* TargetPC)
+{
+    if (!TargetPC || !TargetPC->GetPawn())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS SetupSpectatorMode: Invalid target"));
+        return;
+    }
+
+    UE_LOG(LogTemp, Warning, TEXT("SS Setting up spectator mode targeting: %s"), *TargetPC->GetName());
+
+    ChangeState(NAME_Spectating);
+    SetViewTargetWithBlend(TargetPC->GetPawn(), SpectatorBlendTime);
+    CurrentSpectatorTarget = TargetPC->GetPawn();
+}
+
+void ASSPlayerController::SetSpectatorTarget(APawn* TargetPawn)
+{
+    if (!TargetPawn)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS SetSpectatorTarget: Invalid target pawn"));
+        return;
+    }
+
+    UE_LOG(LogTemp, Warning, TEXT("SS Setting spectator target to: %s"), *TargetPawn->GetName());
+
+    SetViewTargetWithBlend(TargetPawn, SpectatorBlendTime);
+    CurrentSpectatorTarget = TargetPawn;
+}
+
+void ASSPlayerController::ClientSetSpectatorTarget_Implementation(APawn* TargetPawn)
+{
+    if (bIsDummyController)
+    {
+        SetSpectatorTarget(TargetPawn);
+    }
+}
+
+APawn* ASSPlayerController::FindRemotePlayerPawn()
+{
+    UE_LOG(LogTemp, Warning, TEXT("SS FindRemotePlayerPawn called - HasAuthority: %s"), HasAuthority() ? TEXT("Server") : TEXT("Client"));
+
+    // 서버에서는 PlayerController 이터레이터로 원격 플레이어 찾기
+    if (HasAuthority())
+    {
         for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
         {
-            ASSPlayerController* PC = Cast<ASSPlayerController>(*It);
-            if (PC && PC->bIsDummyController && PC != this)
+            APlayerController* PC = It->Get();
+            if (PC && PC != this && PC->GetPawn() && !PC->IsLocalController())
             {
-                ExistingDummyController = PC;
-                UE_LOG(LogTemp, Warning, TEXT("SS Found existing dummy controller: %s"), *PC->GetName());
-                break;
+                UE_LOG(LogTemp, Warning, TEXT("SS Server found remote player pawn: %s"), *PC->GetPawn()->GetName());
+                return PC->GetPawn();
             }
         }
-
-        ASSPlayerController* DummyController = ExistingDummyController;
-
-        // 2) 기존 더미 컨트롤러가 없을 때만 새로 생성
-        if (!DummyController)
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: No remote player found"));
+    }
+    else
+    {
+        // 클라이언트에서는 GameState를 통해 다른 플레이어 찾기
+        AGameStateBase* GameState = GetWorld()->GetGameState();
+        if (GameState)
         {
-            // 새 컨트롤러 생성 전에 정말 필요한지 다시 체크
-            UGameInstance* GameInstance = GetGameInstance();
-            if (GameInstance && GameInstance->GetNumLocalPlayers() >= 2)
+            UE_LOG(LogTemp, Warning, TEXT("SS Client checking GameState PlayerArray, count: %d"), GameState->PlayerArray.Num());
+
+            for (APlayerState* PS : GameState->PlayerArray)
             {
-                ULocalPlayer* SecondLocalPlayer = GameInstance->GetLocalPlayerByIndex(1);
-                if (SecondLocalPlayer && !SecondLocalPlayer->PlayerController)
+                if (PS && PS != GetPlayerState<APlayerState>() && PS->GetPawn())
                 {
-                    // 두 번째 LocalPlayer에 컨트롤러가 없을 때만 생성
-                    DummyController = GetWorld()->SpawnActor<ASSPlayerController>();
-                    if (DummyController)
+                    // 추가 검증: 자기 자신이 아닌지 확인
+                    if (PS->GetPawn() != GetPawn())
                     {
-                        DummyController->SetAsDummyController(true);
-                        UE_LOG(LogTemp, Warning, TEXT("SS New dummy controller created: %s"), *DummyController->GetName());
-                    }
-                }
-                else
-                {
-                    UE_LOG(LogTemp, Warning, TEXT("SS SecondLocalPlayer already has controller, skipping creation"));
-                    // 이미 컨트롤러가 있다면 그것을 사용
-                    if (SecondLocalPlayer->PlayerController)
-                    {
-                        if (ASSPlayerController* SSPC = Cast<ASSPlayerController>(SecondLocalPlayer->PlayerController))
-                        {
-                            DummyController = SSPC;
-                            DummyController->SetAsDummyController(true);
-                        }
+                        UE_LOG(LogTemp, Warning, TEXT("SS Client found remote player pawn via GameState: %s"), *PS->GetPawn()->GetName());
+                        return PS->GetPawn();
                     }
                 }
             }
         }
 
-        // 3) 컨트롤러 설정
-        if (DummyController)
+        // GameState가 없거나 실패한 경우 fallback으로 non-dummy 컨트롤러 찾기
+        UE_LOG(LogTemp, Warning, TEXT("SS Client fallback: checking PlayerController iterator"));
+
+        for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
         {
-            UGameInstance* GameInstance = GetGameInstance();
-            if (GameInstance && GameInstance->GetNumLocalPlayers() >= 2)
+            ASSPlayerController* SSPC = Cast<ASSPlayerController>(It->Get());
+            if (SSPC && SSPC != this && !SSPC->bIsDummyController && SSPC->GetPawn())
             {
-                ULocalPlayer* SecondLocalPlayer = GameInstance->GetLocalPlayerByIndex(1);
-                if (SecondLocalPlayer)
+                // 추가 검증: 자기 자신이 아닌지 확인
+                if (SSPC->GetPawn() != GetPawn())
                 {
-                    // 기존 연결이 없을 때만 설정
-                    if (!SecondLocalPlayer->PlayerController || SecondLocalPlayer->PlayerController != DummyController)
-                    {
-                        DummyController->SetPlayer(SecondLocalPlayer);
-                    }
-
-                    // 폰이 소유되지 않았을 때만 Possess
-                    if (!ClientDummyPawn->GetController() || ClientDummyPawn->GetController() != DummyController)
-                    {
-                        DummyController->Possess(ClientDummyPawn);
-                    }
-
-                    UE_LOG(LogTemp, Warning, TEXT("SS Client dummy controller setup complete"));
+                    UE_LOG(LogTemp, Warning, TEXT("SS Client found non-dummy player pawn (fallback): %s"), *SSPC->GetPawn()->GetName());
+                    return SSPC->GetPawn();
                 }
             }
         }
 
-        // 4) 클라이언트 동기화 시작 (한 번만)
-        if (!GetWorldTimerManager().IsTimerActive(ClientSyncTimerHandle))
+        UE_LOG(LogTemp, Warning, TEXT("SS Client: No remote player found"));
+    }
+
+    return nullptr;
+}
+
+APlayerController* ASSPlayerController::FindRemotePlayerController()
+{
+    for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+    {
+        ASSPlayerController* SSPC = Cast<ASSPlayerController>(It->Get());
+        if (SSPC && SSPC != this && !SSPC->bIsDummyController)
         {
-            StartClientDummySync(ClientDummyPawn);
+            return SSPC;
         }
     }
-    else
-    {
-        UE_LOG(LogTemp, Error, TEXT("SS Failed to create client dummy pawn"));
-    }
-}
-
-
-void ASSPlayerController::StartClientDummySync(ASSDummySpectatorPawn* DummyPawn)
-{
-    if (!DummyPawn)
-    {
-        UE_LOG(LogTemp, Error, TEXT("SS Cannot start sync - dummy pawn is null"));
-        return;
-    }
-
-    UE_LOG(LogTemp, Warning, TEXT("SS Starting client dummy sync"));
-
-    // 클라이언트에서 원격 플레이어와 동기화
-    GetWorldTimerManager().SetTimer(
-        ClientSyncTimerHandle,
-        [this, DummyPawn]()
-        {
-            SyncClientDummyWithRemotePlayer(DummyPawn);
-        },
-        0.0083f, 
-        true
-    );
-}
-
-void ASSPlayerController::SyncClientDummyWithRemotePlayer(ASSDummySpectatorPawn* DummyPawn)
-{
-    if (!DummyPawn) return;
-
-    // 1) 프록시에서 최신 서버 카메라 데이터 가져오기
-    ASSCameraViewProxy* Proxy = CachedProxy.Get();
-    if (!Proxy)
-    {
-        for (TActorIterator<ASSCameraViewProxy> It(GetWorld()); It; ++It)
-        {
-            Proxy = *It;
-            break;
-        }
-        if (!Proxy) return;
-        CachedProxy = Proxy;
-    }
-
-    const FRepCamInfo& ServerCam = Proxy->GetReplicatedCamera();
-
-    // 2) 새로운 서버 데이터가 도착했는지 확인
-    bool bNewServerData = false;
-    if (!LastServerCamera.Location.Equals(ServerCam.Location, 1.0f) ||
-        !LastServerCamera.Rotation.Equals(ServerCam.Rotation, 1.0f))
-    {
-        bNewServerData = true;
-        UpdateCameraHistory(ServerCam);
-    }
-
-    // 3) 카메라 위치 예측 수행
-    FCameraPredictionData PredictedState = PredictCameraMovement();
-
-    // 4) 서버 데이터로 예측 보정 (새 데이터가 있을 때만)
-    if (bNewServerData)
-    {
-        PredictedState = CorrectPredictionWithServerData(PredictedState, ServerCam);
-    }
-
-    // 5) 더미 폰에 예측된 카메라 적용
-    ApplyPredictedCamera(DummyPawn, PredictedState);
-}
-
-void ASSPlayerController::UpdateCameraHistory(const FRepCamInfo& ServerCam)
-{
-    FCameraPredictionData NewData;
-    NewData.Location = ServerCam.Location;
-    NewData.Rotation = ServerCam.Rotation;
-    NewData.FOV = ServerCam.FOV;
-    NewData.Timestamp = GetWorld()->GetTimeSeconds();
-
-    // 속도 계산 (이전 데이터가 있는 경우)
-    if (CameraHistory.Num() > 0)
-    {
-        const FCameraPredictionData& LastData = CameraHistory.Last();
-        float DeltaTime = NewData.Timestamp - LastData.Timestamp;
-
-        if (DeltaTime > 0.0f)
-        {
-            // 선형 속도 계산
-            NewData.Velocity = (NewData.Location - LastData.Location) / DeltaTime;
-
-            // 각속도 계산 (단순화된 버전)
-            FRotator DeltaRotation = (NewData.Rotation - LastData.Rotation).GetNormalized();
-            NewData.AngularVelocity = FVector(DeltaRotation.Pitch, DeltaRotation.Yaw, DeltaRotation.Roll) / DeltaTime;
-        }
-    }
-
-    // 히스토리에 추가
-    CameraHistory.Add(NewData);
-
-    // 히스토리 크기 제한
-    if (CameraHistory.Num() > MaxHistorySize)
-    {
-        CameraHistory.RemoveAt(0);
-    }
-
-    // 마지막 서버 데이터 업데이트
-    LastServerCamera = NewData;
-}
-
-FCameraPredictionData ASSPlayerController::PredictCameraMovement()
-{
-    if (CameraHistory.Num() == 0)
-    {
-        return PredictedCamera; // 데이터가 없으면 이전 예측값 유지
-    }
-
-    const FCameraPredictionData& LatestData = CameraHistory.Last();
-    float CurrentTime = GetWorld()->GetTimeSeconds();
-    float PredictionDelta = FMath::Clamp(CurrentTime - LatestData.Timestamp, 0.0f, MaxPredictionTime);
-
-    FCameraPredictionData Predicted = LatestData;
-
-    if (PredictionDelta > 0.0f && CameraHistory.Num() >= 2)
-    {
-        // 속도 기반 예측
-        Predicted.Location = LatestData.Location + (LatestData.Velocity * PredictionDelta);
-
-        // 회전 예측 (각속도 적용)
-        FRotator PredictedRotation = LatestData.Rotation;
-        PredictedRotation.Pitch += LatestData.AngularVelocity.X * PredictionDelta;
-        PredictedRotation.Yaw += LatestData.AngularVelocity.Y * PredictionDelta;
-        PredictedRotation.Roll += LatestData.AngularVelocity.Z * PredictionDelta;
-        Predicted.Rotation = PredictedRotation.GetNormalized();
-
-        // 가속도 기반 보정 (2차 예측)
-        if (CameraHistory.Num() >= 3)
-        {
-            const FCameraPredictionData& PrevData = CameraHistory[CameraHistory.Num() - 2];
-            FVector Acceleration = (LatestData.Velocity - PrevData.Velocity) /
-                FMath::Max(LatestData.Timestamp - PrevData.Timestamp, 0.001f);
-
-            // 가속도를 고려한 위치 보정
-            Predicted.Location += 0.5f * Acceleration * PredictionDelta * PredictionDelta;
-        }
-    }
-
-    PredictedCamera = Predicted;
-    return Predicted;
-}
-
-FCameraPredictionData ASSPlayerController::CorrectPredictionWithServerData(
-    const FCameraPredictionData& Prediction,
-    const FRepCamInfo& ServerData)
-{
-    FCameraPredictionData Corrected = Prediction;
-
-    // 서버 데이터와 예측 사이의 오차 계산
-    FVector LocationError = ServerData.Location - Prediction.Location;
-    FRotator RotationError = (ServerData.Rotation - Prediction.Rotation).GetNormalized();
-
-    // 오차가 너무 크면 즉시 보정, 작으면 점진적 보정
-    float LocationErrorMagnitude = LocationError.Size();
-    float RotationErrorMagnitude = FMath::Abs(RotationError.Yaw) + FMath::Abs(RotationError.Pitch);
-
-    float DeltaTime = GetWorld()->GetDeltaSeconds();
-
-    if (LocationErrorMagnitude > 100.0f) // 1미터 이상 차이나면 즉시 보정
-    {
-        Corrected.Location = ServerData.Location;
-        UE_LOG(LogTemp, Warning, TEXT("Large location error detected: %.2f, immediate correction"), LocationErrorMagnitude);
-    }
-    else
-    {
-        // 점진적 보정
-        Corrected.Location = FMath::VInterpTo(Prediction.Location, ServerData.Location, DeltaTime, CorrectionSpeed);
-    }
-
-    if (RotationErrorMagnitude > 10.0f) // 10도 이상 차이나면 즉시 보정
-    {
-        Corrected.Rotation = ServerData.Rotation;
-        UE_LOG(LogTemp, Warning, TEXT("Large rotation error detected: %.2f, immediate correction"), RotationErrorMagnitude);
-    }
-    else
-    {
-        // 점진적 보정
-        Corrected.Rotation = FMath::RInterpTo(Prediction.Rotation, ServerData.Rotation, DeltaTime, CorrectionSpeed);
-    }
-
-    // FOV는 즉시 적용 (중요도 낮음)
-    Corrected.FOV = ServerData.FOV;
-
-    return Corrected;
-}
-
-void ASSPlayerController::ApplyPredictedCamera(ASSDummySpectatorPawn* DummyPawn, const FCameraPredictionData& CameraData)
-{
-    // 더미 폰 위치/회전 적용
-    DummyPawn->SetActorLocation(CameraData.Location);
-    DummyPawn->SetActorRotation(CameraData.Rotation);
-
-    // 컨트롤러 회전도 동기화
-    if (APlayerController* DummyController = Cast<APlayerController>(DummyPawn->GetController()))
-    {
-        DummyController->SetControlRotation(CameraData.Rotation);
-    }
-
-    // 카메라 FOV 적용
-    if (UCameraComponent* Camera = DummyPawn->FindComponentByClass<UCameraComponent>())
-    {
-        Camera->SetFieldOfView(CameraData.FOV);
-    }
-}
-
-// 디버그용 함수 (선택적으로 사용)
-void ASSPlayerController::DebugCameraPrediction()
-{
-    if (CameraHistory.Num() > 0)
-    {
-        const FCameraPredictionData& Latest = CameraHistory.Last();
-        UE_LOG(LogTemp, Log, TEXT("Camera Prediction - Velocity: %s, History Size: %d"),
-            *Latest.Velocity.ToString(), CameraHistory.Num());
-    }
+    return nullptr;
 }
 
 void ASSPlayerController::SetAsDummyController(bool bDummy)
@@ -480,22 +372,34 @@ void ASSPlayerController::Tick(float DeltaTime)
             TimeSinceLastUpdate = 0.0f;
         }
     }
+
+    // 스펙테이터 타겟이 유효한지 주기적으로 체크 (더미 컨트롤러가 아닌 경우에만)
+    if (ClientDummyController && CurrentSpectatorTarget)
+    {
+        // 타겟이 삭제되었거나 무효해진 경우 재탐색
+        if (!IsValid(CurrentSpectatorTarget))
+        {
+            APawn* NewTarget = FindRemotePlayerPawn();
+            if (NewTarget && NewTarget != CurrentSpectatorTarget)
+            {
+                ClientDummyController->SetViewTargetWithBlend(NewTarget, SpectatorBlendTime);
+                CurrentSpectatorTarget = NewTarget;
+                UE_LOG(LogTemp, Warning, TEXT("SS Spectator target updated to: %s"), *NewTarget->GetName());
+            }
+        }
+    }
 }
 
 void ASSPlayerController::ServerUpdatePlayerLocation_Implementation(FVector Location, FRotator Rotation)
 {
-    // 서버에서 다른 클라이언트들에게 위치 정보 전달
-    ASSGameMode* SSGameMode = Cast<ASSGameMode>(GetWorld()->GetAuthGameMode());
-    if (SSGameMode)
+    // 서버에서 클라이언트들의 스펙테이터에게 타겟 업데이트 알림
+    for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
     {
-        // 모든 다른 클라이언트에게 이 플레이어의 위치 전송
-        for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+        ASSPlayerController* OtherPC = Cast<ASSPlayerController>(It->Get());
+        if (OtherPC && OtherPC != this && !OtherPC->IsLocalController())
         {
-            ASSPlayerController* OtherPC = Cast<ASSPlayerController>(*It);
-            if (OtherPC && OtherPC != this)
-            {
-                OtherPC->ClientReceiveRemotePlayerLocation(Location, Rotation);
-            }
+            // 다른 클라이언트의 더미 컨트롤러에게 이 플레이어를 타겟으로 설정하도록 지시
+            OtherPC->ClientSetSpectatorTarget(GetPawn());
         }
     }
 }
@@ -507,29 +411,13 @@ bool ASSPlayerController::ServerUpdatePlayerLocation_Validate(FVector Location, 
 
 void ASSPlayerController::ClientReceiveRemotePlayerLocation_Implementation(FVector Location, FRotator Rotation)
 {
-    // 받은 원격 플레이어 위치 정보 로그
-    // UE_LOG(LogTemp, Log, TEXT("SS Received remote player location: %s"), *Location.ToString());
+    // 스펙테이터 모드에서는 자동으로 동기화되므로 별도 처리 불필요
+    UE_LOG(LogTemp, VeryVerbose, TEXT("SS Received remote player location (spectator mode handles sync automatically)"));
 }
-
-/*
-// 추가: PlayerController 정리 함수
-void ASSPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
+void ASSPlayerController::OnRep_RepCam()
 {
-    // 타이머 정리
-    if (GetWorldTimerManager().IsTimerActive(ClientSyncTimerHandle))
-    {
-        GetWorldTimerManager().ClearTimer(ClientSyncTimerHandle);
-        UE_LOG(LogTemp, Log, TEXT("SS Cleared sync timer for controller: %s"), *GetName());
-    }
-
-    // 더미 컨트롤러인 경우 추가 정리
-    if (bIsDummyController)
-    {
-        UE_LOG(LogTemp, Log, TEXT("SS Dummy controller %s ending play"), *GetName());
-    }
-
-    Super::EndPlay(EndPlayReason);
+    // 클라에서 RepCam 갱신 시 반영할 일 처리
+    // 예: 더미 카메라/컨트롤러에 적용 or 로그
+    // UE_LOG(LogTemp, Verbose, TEXT("OnRep_RepCam: Loc=%s Rot=%s FOV=%.2f"),
+    //     *RepCam.Location.ToString(), *RepCam.Rotation.ToString(), RepCam.FOV);
 }
-
-
-*/

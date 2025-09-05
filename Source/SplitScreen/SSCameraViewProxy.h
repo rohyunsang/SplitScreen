@@ -29,28 +29,31 @@ class SPLITSCREEN_API ASSCameraViewProxy : public AActor
 public:
     ASSCameraViewProxy();
 
-    virtual void Tick(float DeltaSeconds) override;
+protected:
+    virtual void Tick(float DeltaTime) override;
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
-    /** 서버에서 카메라 소스가 될 PlayerController 지정 */
-    UFUNCTION(BlueprintCallable, Category = "SS|CameraProxy")
+    void UpdateServerCamera();
+    void ApplyReplicatedCamera();
+
+public:
+    UFUNCTION(BlueprintCallable, CallInEditor, Category = "SplitScreen|Camera")
     void SetSourcePC(APlayerController* InPC);
 
-    /** 편의 함수: 서버에서 플레이어 인덱스로 소스 지정 (예: 0 = 리슨서버 로컬) */
-    UFUNCTION(BlueprintCallable, Category = "SS|CameraProxy")
+    UFUNCTION(BlueprintCallable, CallInEditor, Category = "SplitScreen|Camera")
     void SetSourceFromPlayerIndex(int32 PlayerIndex = 0);
 
-    /** 클라에서 읽을 수 있는 복제된 카메라 정보 */
-    UFUNCTION(BlueprintPure, Category = "SS|CameraProxy")
-    const FRepCamInfo& GetReplicatedCamera() const { return RepCam; }
+    UFUNCTION()
+    void OnRep_RepCam();
 
 protected:
-    /** 복제되는 카메라 정보(서버가 채우고 클라가 읽음) */
-    UPROPERTY(Replicated)
+    // RepCam이 변경될 때 OnRep_RepCam 호출하도록 연결
+    UPROPERTY(ReplicatedUsing = OnRep_RepCam, BlueprintReadOnly)
     FRepCamInfo RepCam;
 
-    /** 서버에서만 의미 있는 소스 PC (클라에 복제되지 않음) */
-    UPROPERTY(Transient)
+
+private:
+    UPROPERTY()
     TWeakObjectPtr<APlayerController> SourcePC;
 
 };

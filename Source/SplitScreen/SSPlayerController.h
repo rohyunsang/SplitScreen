@@ -6,55 +6,16 @@
 #include "GameFramework/PlayerController.h"
 #include "Engine/Engine.h"
 #include "Components/InputComponent.h"
+#include "SSCameraViewProxy.h"
 #include "SSPlayerController.generated.h"
 
 class ASSDummySpectatorPawn;
-class ASSCameraViewProxy;
-class UCameraComponent;
 
-// 카메라 예측을 위한 데이터 구조체
-USTRUCT()
-struct FCameraPredictionData
-{
-    GENERATED_BODY()
-
-    UPROPERTY()
-    FVector Location = FVector::ZeroVector;
-
-    UPROPERTY()
-    FRotator Rotation = FRotator::ZeroRotator;
-
-    UPROPERTY()
-    float FOV = 90.0f;
-
-    UPROPERTY()
-    FVector Velocity = FVector::ZeroVector;
-
-    UPROPERTY()
-    FVector AngularVelocity = FVector::ZeroVector;
-
-    UPROPERTY()
-    float Timestamp = 0.0f;
-
-    FCameraPredictionData()
-    {
-        Location = FVector::ZeroVector;
-        Rotation = FRotator::ZeroRotator;
-        FOV = 90.0f;
-        Velocity = FVector::ZeroVector;
-        AngularVelocity = FVector::ZeroVector;
-        Timestamp = 0.0f;
-    }
-};
-
-/**
- * 
- */
 UCLASS()
 class SPLITSCREEN_API ASSPlayerController : public APlayerController
 {
-	GENERATED_BODY()
-	
+    GENERATED_BODY()
+
 public:
     virtual void BeginPlay() override;
     virtual void Tick(float DeltaTime) override;
@@ -67,9 +28,13 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Split Screen")
     void SetAsDummyController(bool bDummy = true);
 
-    // 캐시된 프록시 참조
-    UPROPERTY()
-    TWeakObjectPtr<ASSCameraViewProxy> CachedProxy;
+    // 스펙테이터 모드 설정
+    UFUNCTION(BlueprintCallable, Category = "Split Screen")
+    void SetupSpectatorMode(APlayerController* TargetPC);
+
+    // 스펙테이터 타겟 설정
+    UFUNCTION(BlueprintCallable, Category = "Split Screen")
+    void SetSpectatorTarget(APawn* TargetPawn);
 
 protected:
     // 네트워크 RPC 함수들
@@ -79,8 +44,20 @@ protected:
     UFUNCTION(Client, Reliable)
     void ClientReceiveRemotePlayerLocation(FVector Location, FRotator Rotation);
 
+    // 서버에서 클라이언트에게 스펙테이터 타겟 설정 지시
+    UFUNCTION(Client, Reliable)
+    void ClientSetSpectatorTarget(APawn* TargetPawn);
+
     // 입력 설정
     virtual void SetupInputComponent() override;
+
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+    UFUNCTION()
+    void OnRep_RepCam();
+
+    UPROPERTY(ReplicatedUsing = OnRep_RepCam, BlueprintReadOnly)
+    FRepCamInfo RepCam;
 
 private:
     // 네트워크 업데이트 관련
@@ -89,56 +66,26 @@ private:
 
     // 클라이언트용 함수들
     void SetupClientSplitScreen();
-    void CreateClientDummyPawn();
-    void StartClientDummySync(ASSDummySpectatorPawn* DummyPawn);
-    void SyncClientDummyWithRemotePlayer(ASSDummySpectatorPawn* DummyPawn);
+    void CreateClientDummyController();
+    void SetupSpectatorForDummyController();
 
     // 클라이언트 더미 관련 변수들
     UPROPERTY()
-    ASSDummySpectatorPawn* ClientDummyPawn;
-
-    FTimerHandle ClientSyncTimerHandle;
+    APlayerController* ClientDummyController;
 
     UPROPERTY()
     bool bClientSplitScreenSetupComplete = false;
 
-    // === 카메라 예측 시스템 ===
-
-    // 서버로부터 받은 카메라 데이터 히스토리
+    // 스펙테이터 관련 변수들
     UPROPERTY()
-    TArray<FCameraPredictionData> CameraHistory;
+    APawn* CurrentSpectatorTarget;
 
-    // 현재 예측된 카메라 상태
-    UPROPERTY()
-    FCameraPredictionData PredictedCamera;
+    UPROPERTY(EditAnywhere, Category = "Spectator")
+    float SpectatorBlendTime = 0.5f; // 타겟 변경시 블렌드 시간
 
-    // 마지막으로 받은 서버 데이터
-    UPROPERTY()
-    FCameraPredictionData LastServerCamera;
+    // 타겟 플레이어 찾기
+    APawn* FindRemotePlayerPawn();
+    APlayerController* FindRemotePlayerController();
 
-    // 예측 설정값들
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    float MaxPredictionTime = 0.2f; // 최대 예측 시간 (200ms)
 
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    float CorrectionSpeed = 10.0f; // 서버 데이터로 보정하는 속도
-
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    int32 MaxHistorySize = 10; // 저장할 히스토리 개수
-
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    float ImmediateCorrectionLocationThreshold = 100.0f; // 즉시 보정할 위치 오차 임계값 (cm)
-
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    float ImmediateCorrectionRotationThreshold = 10.0f; // 즉시 보정할 회전 오차 임계값 (도)
-
-    // 카메라 예측 관련 함수들
-    void UpdateCameraHistory(const struct FRepCamInfo& ServerCam);
-    FCameraPredictionData PredictCameraMovement();
-    FCameraPredictionData CorrectPredictionWithServerData(const FCameraPredictionData& Prediction, const struct FRepCamInfo& ServerData);
-    void ApplyPredictedCamera(ASSDummySpectatorPawn* DummyPawn, const FCameraPredictionData& CameraData);
-
-    // 디버그용 함수
-    UFUNCTION(BlueprintCallable, Category = "Debug")
-    void DebugCameraPrediction();
 };
