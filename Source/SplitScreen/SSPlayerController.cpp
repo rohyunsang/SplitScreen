@@ -252,108 +252,194 @@ void ASSPlayerController::SyncClientDummyWithRemotePlayer(ASSDummySpectatorPawn*
 {
     if (!DummyPawn) return;
 
-    // 1) 프록시를 못 찾았다면 한 번만 스캔해서 캐시
+    // 1) 프록시에서 최신 서버 카메라 데이터 가져오기
     ASSCameraViewProxy* Proxy = CachedProxy.Get();
     if (!Proxy)
     {
         for (TActorIterator<ASSCameraViewProxy> It(GetWorld()); It; ++It)
         {
             Proxy = *It;
-            break; // 첫 번째만 사용
+            break;
         }
         if (!Proxy) return;
         CachedProxy = Proxy;
-        UE_LOG(LogTemp, Warning, TEXT("SS Cached ServerCamProxy on client"));
     }
 
-    // 2) 복제된 서버 화면 시점(위치/회전/FOV) 가져오기
-    const FRepCamInfo& View = Proxy->GetReplicatedCamera();
+    const FRepCamInfo& ServerCam = Proxy->GetReplicatedCamera();
 
-    // 데이터 검증 추가
-    if (View.Location.ContainsNaN() || View.Rotation.ContainsNaN())
+    // 2) 새로운 서버 데이터가 도착했는지 확인
+    bool bNewServerData = false;
+    if (!LastServerCamera.Location.Equals(ServerCam.Location, 1.0f) ||
+        !LastServerCamera.Rotation.Equals(ServerCam.Rotation, 1.0f))
     {
-        UE_LOG(LogTemp, Warning, TEXT("SS Invalid camera data received, skipping update"));
-        return;
+        bNewServerData = true;
+        UpdateCameraHistory(ServerCam);
     }
 
-    // 너무 큰 변화량 체크
-    const float MaxLocationChange = 2000.0f; // 프레임당 최대 이동 거리
-    const float Dist = FVector::Dist(DummyPawn->GetActorLocation(), View.Location);
+    // 3) 카메라 위치 예측 수행
+    FCameraPredictionData PredictedState = PredictCameraMovement();
 
-    if (Dist > MaxLocationChange)
+    // 4) 서버 데이터로 예측 보정 (새 데이터가 있을 때만)
+    if (bNewServerData)
     {
-        UE_LOG(LogTemp, Warning, TEXT("SS Camera jump detected (%.2f units), smoothing transition"), Dist);
-        // 큰 변화는 여러 프레임에 걸쳐 보간
-        const float Dt = GetWorld()->GetDeltaSeconds();
-        const FVector NewLocation = FMath::VInterpTo(DummyPawn->GetActorLocation(), View.Location, Dt, 20.0f);
-        const FRotator NewRotation = FMath::RInterpTo(DummyPawn->GetActorRotation(), View.Rotation, Dt, 30.0f);
+        PredictedState = CorrectPredictionWithServerData(PredictedState, ServerCam);
+    }
 
-        DummyPawn->SetActorLocation(NewLocation);
-        DummyPawn->SetActorRotation(NewRotation);
+    // 5) 더미 폰에 예측된 카메라 적용
+    ApplyPredictedCamera(DummyPawn, PredictedState);
+}
 
-        // 컨트롤러 회전도 함께 보간
-        if (APlayerController* DPC = Cast<APlayerController>(DummyPawn->GetController()))
+void ASSPlayerController::UpdateCameraHistory(const FRepCamInfo& ServerCam)
+{
+    FCameraPredictionData NewData;
+    NewData.Location = ServerCam.Location;
+    NewData.Rotation = ServerCam.Rotation;
+    NewData.FOV = ServerCam.FOV;
+    NewData.Timestamp = GetWorld()->GetTimeSeconds();
+
+    // 속도 계산 (이전 데이터가 있는 경우)
+    if (CameraHistory.Num() > 0)
+    {
+        const FCameraPredictionData& LastData = CameraHistory.Last();
+        float DeltaTime = NewData.Timestamp - LastData.Timestamp;
+
+        if (DeltaTime > 0.0f)
         {
-            const FRotator NewCtrlRot = FMath::RInterpTo(DPC->GetControlRotation(), View.Rotation, Dt, 30.0f);
-            DPC->SetControlRotation(NewCtrlRot);
-        }
+            // 선형 속도 계산
+            NewData.Velocity = (NewData.Location - LastData.Location) / DeltaTime;
 
-        // FOV도 보간
-        if (UCameraComponent* Cam = DummyPawn->FindComponentByClass<UCameraComponent>())
-        {
-            const float CurrentFOV = Cam->FieldOfView;
-            const float NewFOV = FMath::FInterpTo(CurrentFOV, View.FOV, Dt, 10.0f);
-            Cam->SetFieldOfView(NewFOV);
+            // 각속도 계산 (단순화된 버전)
+            FRotator DeltaRotation = (NewData.Rotation - LastData.Rotation).GetNormalized();
+            NewData.AngularVelocity = FVector(DeltaRotation.Pitch, DeltaRotation.Yaw, DeltaRotation.Roll) / DeltaTime;
         }
-
-        return; // 큰 변화 처리 후 리턴
     }
 
-    // 3) 기존 보간 로직 - 일반적인 움직임 처리
-    const float Dt = GetWorld()->GetDeltaSeconds();
-    const float MoveSpd = 35.0f, RotSpd = 45.0f;
+    // 히스토리에 추가
+    CameraHistory.Add(NewData);
 
-    // 거리에 따른 처리 분기
-    if (Dist > 500.f)
+    // 히스토리 크기 제한
+    if (CameraHistory.Num() > MaxHistorySize)
     {
-        // 중간 거리 - 즉시 이동하지만 회전은 보간
-        DummyPawn->SetActorLocation(View.Location);
-        DummyPawn->SetActorRotation(FMath::RInterpTo(DummyPawn->GetActorRotation(), View.Rotation, Dt, RotSpd));
+        CameraHistory.RemoveAt(0);
+    }
+
+    // 마지막 서버 데이터 업데이트
+    LastServerCamera = NewData;
+}
+
+FCameraPredictionData ASSPlayerController::PredictCameraMovement()
+{
+    if (CameraHistory.Num() == 0)
+    {
+        return PredictedCamera; // 데이터가 없으면 이전 예측값 유지
+    }
+
+    const FCameraPredictionData& LatestData = CameraHistory.Last();
+    float CurrentTime = GetWorld()->GetTimeSeconds();
+    float PredictionDelta = FMath::Clamp(CurrentTime - LatestData.Timestamp, 0.0f, MaxPredictionTime);
+
+    FCameraPredictionData Predicted = LatestData;
+
+    if (PredictionDelta > 0.0f && CameraHistory.Num() >= 2)
+    {
+        // 속도 기반 예측
+        Predicted.Location = LatestData.Location + (LatestData.Velocity * PredictionDelta);
+
+        // 회전 예측 (각속도 적용)
+        FRotator PredictedRotation = LatestData.Rotation;
+        PredictedRotation.Pitch += LatestData.AngularVelocity.X * PredictionDelta;
+        PredictedRotation.Yaw += LatestData.AngularVelocity.Y * PredictionDelta;
+        PredictedRotation.Roll += LatestData.AngularVelocity.Z * PredictionDelta;
+        Predicted.Rotation = PredictedRotation.GetNormalized();
+
+        // 가속도 기반 보정 (2차 예측)
+        if (CameraHistory.Num() >= 3)
+        {
+            const FCameraPredictionData& PrevData = CameraHistory[CameraHistory.Num() - 2];
+            FVector Acceleration = (LatestData.Velocity - PrevData.Velocity) /
+                FMath::Max(LatestData.Timestamp - PrevData.Timestamp, 0.001f);
+
+            // 가속도를 고려한 위치 보정
+            Predicted.Location += 0.5f * Acceleration * PredictionDelta * PredictionDelta;
+        }
+    }
+
+    PredictedCamera = Predicted;
+    return Predicted;
+}
+
+FCameraPredictionData ASSPlayerController::CorrectPredictionWithServerData(
+    const FCameraPredictionData& Prediction,
+    const FRepCamInfo& ServerData)
+{
+    FCameraPredictionData Corrected = Prediction;
+
+    // 서버 데이터와 예측 사이의 오차 계산
+    FVector LocationError = ServerData.Location - Prediction.Location;
+    FRotator RotationError = (ServerData.Rotation - Prediction.Rotation).GetNormalized();
+
+    // 오차가 너무 크면 즉시 보정, 작으면 점진적 보정
+    float LocationErrorMagnitude = LocationError.Size();
+    float RotationErrorMagnitude = FMath::Abs(RotationError.Yaw) + FMath::Abs(RotationError.Pitch);
+
+    float DeltaTime = GetWorld()->GetDeltaSeconds();
+
+    if (LocationErrorMagnitude > 100.0f) // 1미터 이상 차이나면 즉시 보정
+    {
+        Corrected.Location = ServerData.Location;
+        UE_LOG(LogTemp, Warning, TEXT("Large location error detected: %.2f, immediate correction"), LocationErrorMagnitude);
     }
     else
     {
-        // 가까운 거리 - 부드러운 보간
-        DummyPawn->SetActorLocation(FMath::VInterpTo(DummyPawn->GetActorLocation(), View.Location, Dt, MoveSpd));
-        DummyPawn->SetActorRotation(FMath::RInterpTo(DummyPawn->GetActorRotation(), View.Rotation, Dt, RotSpd));
+        // 점진적 보정
+        Corrected.Location = FMath::VInterpTo(Prediction.Location, ServerData.Location, DeltaTime, CorrectionSpeed);
     }
 
-    // 4) 더미 컨트롤러의 ControlRotation도 보간
-    if (APlayerController* DPC = Cast<APlayerController>(DummyPawn->GetController()))
+    if (RotationErrorMagnitude > 10.0f) // 10도 이상 차이나면 즉시 보정
     {
-        const FRotator NewCtrlRot = FMath::RInterpTo(DPC->GetControlRotation(), View.Rotation, Dt, RotSpd);
-        DPC->SetControlRotation(NewCtrlRot);
+        Corrected.Rotation = ServerData.Rotation;
+        UE_LOG(LogTemp, Warning, TEXT("Large rotation error detected: %.2f, immediate correction"), RotationErrorMagnitude);
     }
-
-    // 5) FOV 동기화 (더미 카메라가 컨트롤러 회전을 사용하도록 설정돼 있어야 함)
-    if (UCameraComponent* Cam = DummyPawn->FindComponentByClass<UCameraComponent>())
+    else
     {
-        const float CurrentFOV = Cam->FieldOfView;
-        const float NewFOV = FMath::FInterpTo(CurrentFOV, View.FOV, Dt, 5.0f); // 부드러운 FOV 전환
-        Cam->SetFieldOfView(NewFOV);
-        // 필요 시 PostProcess 등 추가 동기화 가능
+        // 점진적 보정
+        Corrected.Rotation = FMath::RInterpTo(Prediction.Rotation, ServerData.Rotation, DeltaTime, CorrectionSpeed);
     }
 
-    // 6) 디버깅용 로그 (큰 변화 감지)
-    static FVector LastViewLocation = FVector::ZeroVector;
-    const float LocationJump = FVector::Dist(View.Location, LastViewLocation);
+    // FOV는 즉시 적용 (중요도 낮음)
+    Corrected.FOV = ServerData.FOV;
 
-    if (LocationJump > 1000.0f)
+    return Corrected;
+}
+
+void ASSPlayerController::ApplyPredictedCamera(ASSDummySpectatorPawn* DummyPawn, const FCameraPredictionData& CameraData)
+{
+    // 더미 폰 위치/회전 적용
+    DummyPawn->SetActorLocation(CameraData.Location);
+    DummyPawn->SetActorRotation(CameraData.Rotation);
+
+    // 컨트롤러 회전도 동기화
+    if (APlayerController* DummyController = Cast<APlayerController>(DummyPawn->GetController()))
     {
-        UE_LOG(LogTemp, Warning, TEXT("SS Large camera movement detected: %.2f units from %s to %s"),
-            LocationJump, *LastViewLocation.ToString(), *View.Location.ToString());
+        DummyController->SetControlRotation(CameraData.Rotation);
     }
 
-    LastViewLocation = View.Location;
+    // 카메라 FOV 적용
+    if (UCameraComponent* Camera = DummyPawn->FindComponentByClass<UCameraComponent>())
+    {
+        Camera->SetFieldOfView(CameraData.FOV);
+    }
+}
+
+// 디버그용 함수 (선택적으로 사용)
+void ASSPlayerController::DebugCameraPrediction()
+{
+    if (CameraHistory.Num() > 0)
+    {
+        const FCameraPredictionData& Latest = CameraHistory.Last();
+        UE_LOG(LogTemp, Log, TEXT("Camera Prediction - Velocity: %s, History Size: %d"),
+            *Latest.Velocity.ToString(), CameraHistory.Num());
+    }
 }
 
 void ASSPlayerController::SetAsDummyController(bool bDummy)
