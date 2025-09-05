@@ -154,7 +154,7 @@ void ASSPlayerController::StartClientDummySync(ASSDummySpectatorPawn* DummyPawn)
         {
             SyncClientDummyWithRemotePlayer(DummyPawn);
         },
-        0.033f, // 30fps
+        0.0083f, 
         true
     );
 }
@@ -182,7 +182,7 @@ void ASSPlayerController::SyncClientDummyWithRemotePlayer(ASSDummySpectatorPawn*
 
     // 3) 더미 스펙테이터 이동/회전 보간 (GameMode와 동일 룰)
     const float Dt = GetWorld()->GetDeltaSeconds();
-    const float MoveSpd = 30.f, RotSpd = 30.f;
+    const float MoveSpd = 35.0f, RotSpd = 45.0f;
 
     const float Dist = FVector::Dist(DummyPawn->GetActorLocation(), View.Location);
     if (Dist > 500.f)

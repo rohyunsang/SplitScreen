@@ -109,7 +109,7 @@ void ASSGameMode::SetupOnlineSplitScreen()
         GetWorldTimerManager().SetTimer(
             SyncTimerHandle,
             [this]() { SyncDummyPlayerWithRemotePlayer(); },
-            0.033f,
+            0.0083f,
             true
         );
         UE_LOG(LogTemp, Warning, TEXT("SS Split screen setup completed successfully"));
@@ -228,8 +228,8 @@ void ASSGameMode::SyncDummyPlayerWithRemotePlayer()
         FRotator CurrentRotation = DummySpectatorPawn->GetActorRotation();
 
         // 보간 속도 (값이 클수록 빠르게 따라감)
-        float InterpSpeed = 30.0f; // 조정 가능
-        float RotationInterpSpeed = 30.0f; // 회전은 조금 더 느리게
+        float InterpSpeed = 35.0f; // 조정 가능
+        float RotationInterpSpeed = 45.0f; // 회전은 조금 더 느리게
 
         // 거리 체크 - 너무 멀면 즉시 이동
         float Distance = FVector::Dist(CurrentLocation, TargetLocation);
