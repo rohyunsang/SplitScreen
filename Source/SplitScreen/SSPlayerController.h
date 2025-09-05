@@ -41,7 +41,7 @@ protected:
     virtual void SetupInputComponent() override;
 
 private:
-    float LocationUpdateInterval = 0.1f; // 10fps
+    float LocationUpdateInterval = 0.0167f; // 60fps
     float TimeSinceLastUpdate = 0.0f;
 
     // 클라이언트용 함수들
@@ -56,7 +56,12 @@ private:
 
     FTimerHandle ClientSyncTimerHandle;
 
+    UPROPERTY()
+    bool bClientSplitScreenSetupComplete = false;
+
 public:
     UPROPERTY() 
     TWeakObjectPtr<class ASSCameraViewProxy> CachedProxy;
+
+
 };
