@@ -111,6 +111,7 @@ void ASSPlayerController::SetupClientSplitScreen()
     }
 }
 
+// SSPlayerController.cpp - CreateClientDummyPawn 함수 수정
 void ASSPlayerController::CreateClientDummyPawn()
 {
     UE_LOG(LogTemp, Warning, TEXT("SS Creating client dummy pawn"));
@@ -135,7 +136,9 @@ void ASSPlayerController::CreateClientDummyPawn()
     {
         UE_LOG(LogTemp, Warning, TEXT("SS Client dummy pawn created successfully"));
 
-        // 기존 더미 컨트롤러가 있는지 체크
+        // *** 중요: 더미 컨트롤러를 새로 생성하지 않고 기존 것 활용 ***
+
+        // 1) 먼저 기존 더미 컨트롤러 찾기
         ASSPlayerController* ExistingDummyController = nullptr;
         for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
         {
@@ -143,44 +146,74 @@ void ASSPlayerController::CreateClientDummyPawn()
             if (PC && PC->bIsDummyController && PC != this)
             {
                 ExistingDummyController = PC;
+                UE_LOG(LogTemp, Warning, TEXT("SS Found existing dummy controller: %s"), *PC->GetName());
                 break;
             }
         }
 
         ASSPlayerController* DummyController = ExistingDummyController;
 
-        // 기존 더미 컨트롤러가 없다면 새로 생성
+        // 2) 기존 더미 컨트롤러가 없을 때만 새로 생성
         if (!DummyController)
         {
-            DummyController = GetWorld()->SpawnActor<ASSPlayerController>();
-            if (DummyController)
+            // 새 컨트롤러 생성 전에 정말 필요한지 다시 체크
+            UGameInstance* GameInstance = GetGameInstance();
+            if (GameInstance && GameInstance->GetNumLocalPlayers() >= 2)
             {
-                DummyController->SetAsDummyController(true);
-                UE_LOG(LogTemp, Warning, TEXT("SS New dummy controller created: %s"), *DummyController->GetName());
+                ULocalPlayer* SecondLocalPlayer = GameInstance->GetLocalPlayerByIndex(1);
+                if (SecondLocalPlayer && !SecondLocalPlayer->PlayerController)
+                {
+                    // 두 번째 LocalPlayer에 컨트롤러가 없을 때만 생성
+                    DummyController = GetWorld()->SpawnActor<ASSPlayerController>();
+                    if (DummyController)
+                    {
+                        DummyController->SetAsDummyController(true);
+                        UE_LOG(LogTemp, Warning, TEXT("SS New dummy controller created: %s"), *DummyController->GetName());
+                    }
+                }
+                else
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("SS SecondLocalPlayer already has controller, skipping creation"));
+                    // 이미 컨트롤러가 있다면 그것을 사용
+                    if (SecondLocalPlayer->PlayerController)
+                    {
+                        if (ASSPlayerController* SSPC = Cast<ASSPlayerController>(SecondLocalPlayer->PlayerController))
+                        {
+                            DummyController = SSPC;
+                            DummyController->SetAsDummyController(true);
+                        }
+                    }
+                }
             }
         }
-        else
-        {
-            UE_LOG(LogTemp, Warning, TEXT("SS Using existing dummy controller: %s"), *DummyController->GetName());
-        }
 
+        // 3) 컨트롤러 설정
         if (DummyController)
         {
-            // 두 번째 LocalPlayer 가져오기
             UGameInstance* GameInstance = GetGameInstance();
             if (GameInstance && GameInstance->GetNumLocalPlayers() >= 2)
             {
                 ULocalPlayer* SecondLocalPlayer = GameInstance->GetLocalPlayerByIndex(1);
                 if (SecondLocalPlayer)
                 {
-                    DummyController->SetPlayer(SecondLocalPlayer);
-                    DummyController->Possess(ClientDummyPawn);
+                    // 기존 연결이 없을 때만 설정
+                    if (!SecondLocalPlayer->PlayerController || SecondLocalPlayer->PlayerController != DummyController)
+                    {
+                        DummyController->SetPlayer(SecondLocalPlayer);
+                    }
+
+                    // 폰이 소유되지 않았을 때만 Possess
+                    if (!ClientDummyPawn->GetController() || ClientDummyPawn->GetController() != DummyController)
+                    {
+                        DummyController->Possess(ClientDummyPawn);
+                    }
+
                     UE_LOG(LogTemp, Warning, TEXT("SS Client dummy controller setup complete"));
                 }
             }
         }
 
-        // 클라이언트 동기화 시작 (한 번만)
+        // 4) 클라이언트 동기화 시작 (한 번만)
         if (!GetWorldTimerManager().IsTimerActive(ClientSyncTimerHandle))
         {
             StartClientDummySync(ClientDummyPawn);
@@ -191,6 +224,7 @@ void ASSPlayerController::CreateClientDummyPawn()
         UE_LOG(LogTemp, Error, TEXT("SS Failed to create client dummy pawn"));
     }
 }
+
 
 void ASSPlayerController::StartClientDummySync(ASSDummySpectatorPawn* DummyPawn)
 {
@@ -392,15 +426,24 @@ void ASSPlayerController::ClientReceiveRemotePlayerLocation_Implementation(FVect
 }
 
 /*
+// 추가: PlayerController 정리 함수
 void ASSPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
     // 타이머 정리
     if (GetWorldTimerManager().IsTimerActive(ClientSyncTimerHandle))
     {
         GetWorldTimerManager().ClearTimer(ClientSyncTimerHandle);
+        UE_LOG(LogTemp, Log, TEXT("SS Cleared sync timer for controller: %s"), *GetName());
+    }
+
+    // 더미 컨트롤러인 경우 추가 정리
+    if (bIsDummyController)
+    {
+        UE_LOG(LogTemp, Log, TEXT("SS Dummy controller %s ending play"), *GetName());
     }
 
     Super::EndPlay(EndPlayReason);
 }
+
 
 */
