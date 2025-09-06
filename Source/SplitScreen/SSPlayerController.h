@@ -82,6 +82,19 @@ protected:
     // 입력 설정
     virtual void SetupInputComponent() override;
 
+    // 카메라 회전 관련 
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera Prediction")
+    float MinimumMovementThreshold = 5.0f; // 최소 움직임 임계값 (cm)
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera Prediction")
+    float MinimumRotationThreshold = 2.0f; // 최소 회전 임계값 (도)
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera Prediction")
+    float StationaryPredictionReduction = 0.3f; // 정지 상태일 때 예측 강도 감소
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera Prediction")
+    float MaxAngularVelocityMagnitude = 180.0f; // 최대 각속도 제한 (도/초)
+
 private:
     // 네트워크 업데이트 관련
     float LocationUpdateInterval = 0.0167f; // 60fps
@@ -141,4 +154,11 @@ private:
     // 디버그용 함수
     UFUNCTION(BlueprintCallable, Category = "Debug")
     void DebugCameraPrediction();
+
+
+
+    // 현재 움직임 상태 추적
+    bool bIsMoving = false;
+    bool bIsRotating = false;
+    float StationaryTime = 0.0f;
 };

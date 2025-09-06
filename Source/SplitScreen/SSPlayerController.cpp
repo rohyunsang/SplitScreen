@@ -305,12 +305,71 @@ void ASSPlayerController::UpdateCameraHistory(const FRepCamInfo& ServerCam)
 
         if (DeltaTime > 0.0f)
         {
-            // 선형 속도 계산
-            NewData.Velocity = (NewData.Location - LastData.Location) / DeltaTime;
+            // 위치 변화량 계산
+            FVector LocationDelta = NewData.Location - LastData.Location;
+            float LocationDeltaMagnitude = LocationDelta.Size();
 
-            // 각속도 계산 (단순화된 버전)
-            FRotator DeltaRotation = (NewData.Rotation - LastData.Rotation).GetNormalized();
-            NewData.AngularVelocity = FVector(DeltaRotation.Pitch, DeltaRotation.Yaw, DeltaRotation.Roll) / DeltaTime;
+            // 회전 변화량 계산
+            FRotator RotationDelta = (NewData.Rotation - LastData.Rotation).GetNormalized();
+            float RotationDeltaMagnitude = FMath::Sqrt(
+                RotationDelta.Pitch * RotationDelta.Pitch +
+                RotationDelta.Yaw * RotationDelta.Yaw +
+                RotationDelta.Roll * RotationDelta.Roll
+            );
+
+            // 움직임 상태 판단
+            bIsMoving = LocationDeltaMagnitude > MinimumMovementThreshold;
+            bIsRotating = RotationDeltaMagnitude > MinimumRotationThreshold;
+
+            if (!bIsMoving && !bIsRotating)
+            {
+                StationaryTime += DeltaTime;
+            }
+            else
+            {
+                StationaryTime = 0.0f;
+            }
+
+            // 속도 계산 (움직이고 있을 때만)
+            if (bIsMoving)
+            {
+                NewData.Velocity = LocationDelta / DeltaTime;
+            }
+            else
+            {
+                // 정지 상태에서는 속도를 점진적으로 감소
+                NewData.Velocity = LastData.Velocity * 0.8f; // 감쇠 계수
+                if (NewData.Velocity.Size() < 1.0f) // 1cm/s 이하면 0으로
+                {
+                    NewData.Velocity = FVector::ZeroVector;
+                }
+            }
+
+            // 각속도 계산 (회전하고 있을 때만)
+            if (bIsRotating)
+            {
+                NewData.AngularVelocity = FVector(
+                    RotationDelta.Pitch,
+                    RotationDelta.Yaw,
+                    RotationDelta.Roll
+                ) / DeltaTime;
+
+                // 각속도 제한 적용
+                float AngularMagnitude = NewData.AngularVelocity.Size();
+                if (AngularMagnitude > MaxAngularVelocityMagnitude)
+                {
+                    NewData.AngularVelocity = NewData.AngularVelocity.GetSafeNormal() * MaxAngularVelocityMagnitude;
+                }
+            }
+            else
+            {
+                // 정지 상태에서는 각속도를 점진적으로 감소
+                NewData.AngularVelocity = LastData.AngularVelocity * 0.7f; // 더 빠른 감쇠
+                if (NewData.AngularVelocity.Size() < 0.5f) // 0.5도/s 이하면 0으로
+                {
+                    NewData.AngularVelocity = FVector::ZeroVector;
+                }
+            }
         }
     }
 
@@ -326,12 +385,11 @@ void ASSPlayerController::UpdateCameraHistory(const FRepCamInfo& ServerCam)
     // 마지막 서버 데이터 업데이트
     LastServerCamera = NewData;
 }
-
 FCameraPredictionData ASSPlayerController::PredictCameraMovement()
 {
     if (CameraHistory.Num() == 0)
     {
-        return PredictedCamera; // 데이터가 없으면 이전 예측값 유지
+        return PredictedCamera;
     }
 
     const FCameraPredictionData& LatestData = CameraHistory.Last();
@@ -342,25 +400,70 @@ FCameraPredictionData ASSPlayerController::PredictCameraMovement()
 
     if (PredictionDelta > 0.0f && CameraHistory.Num() >= 2)
     {
-        // 속도 기반 예측
-        Predicted.Location = LatestData.Location + (LatestData.Velocity * PredictionDelta);
-
-        // 회전 예측 (각속도 적용)
-        FRotator PredictedRotation = LatestData.Rotation;
-        PredictedRotation.Pitch += LatestData.AngularVelocity.X * PredictionDelta;
-        PredictedRotation.Yaw += LatestData.AngularVelocity.Y * PredictionDelta;
-        PredictedRotation.Roll += LatestData.AngularVelocity.Z * PredictionDelta;
-        Predicted.Rotation = PredictedRotation.GetNormalized();
-
-        // 가속도 기반 보정 (2차 예측)
-        if (CameraHistory.Num() >= 3)
+        // 정지 상태에 따른 예측 강도 조절
+        float PredictionStrength = 1.0f;
+        if (StationaryTime > 0.5f) // 0.5초 이상 정지
         {
-            const FCameraPredictionData& PrevData = CameraHistory[CameraHistory.Num() - 2];
-            FVector Acceleration = (LatestData.Velocity - PrevData.Velocity) /
-                FMath::Max(LatestData.Timestamp - PrevData.Timestamp, 0.001f);
+            PredictionStrength = StationaryPredictionReduction;
+        }
+        else if (StationaryTime > 0.1f) // 0.1초 이상 정지 시 점진적 감소
+        {
+            float t = (StationaryTime - 0.1f) / 0.4f; // 0.1~0.5초 구간을 0~1로 정규화
+            PredictionStrength = FMath::Lerp(1.0f, StationaryPredictionReduction, t);
+        }
 
-            // 가속도를 고려한 위치 보정
-            Predicted.Location += 0.5f * Acceleration * PredictionDelta * PredictionDelta;
+        // 위치 예측 (움직이고 있을 때만 적극적으로)
+        if (bIsMoving && LatestData.Velocity.Size() > 1.0f)
+        {
+            FVector PredictedVelocity = LatestData.Velocity * PredictionStrength;
+            Predicted.Location = LatestData.Location + (PredictedVelocity * PredictionDelta);
+
+            // 가속도 기반 보정 (움직임이 있을 때만)
+            if (CameraHistory.Num() >= 3)
+            {
+                const FCameraPredictionData& PrevData = CameraHistory[CameraHistory.Num() - 2];
+                FVector Acceleration = (LatestData.Velocity - PrevData.Velocity) /
+                    FMath::Max(LatestData.Timestamp - PrevData.Timestamp, 0.001f);
+
+                // 가속도 제한
+                float AccelerationMagnitude = Acceleration.Size();
+                if (AccelerationMagnitude > 1000.0f) // 10m/s² 제한
+                {
+                    Acceleration = Acceleration.GetSafeNormal() * 1000.0f;
+                }
+
+                Predicted.Location += 0.5f * Acceleration * PredictionStrength * PredictionDelta * PredictionDelta;
+            }
+        }
+
+        // 회전 예측 (회전하고 있을 때만, 더 보수적으로)
+        if (bIsRotating && LatestData.AngularVelocity.Size() > 0.5f)
+        {
+            FVector PredictedAngularVel = LatestData.AngularVelocity * PredictionStrength * 0.5f; // 회전은 더 보수적
+
+            FRotator PredictedRotation = LatestData.Rotation;
+            PredictedRotation.Pitch += PredictedAngularVel.X * PredictionDelta;
+            PredictedRotation.Yaw += PredictedAngularVel.Y * PredictionDelta;
+            PredictedRotation.Roll += PredictedAngularVel.Z * PredictionDelta;
+            Predicted.Rotation = PredictedRotation.GetNormalized();
+        }
+        else
+        {
+            // 회전하지 않을 때는 현재 회전 유지
+            Predicted.Rotation = LatestData.Rotation;
+        }
+
+        // 디버그 출력 (개발 중에만)
+        if (GEngine && GEngine->bEnableOnScreenDebugMessages)
+        {
+            FString DebugText = FString::Printf(
+                TEXT("Moving: %s, Rotating: %s, Stationary: %.1fs, Strength: %.2f"),
+                bIsMoving ? TEXT("Yes") : TEXT("No"),
+                bIsRotating ? TEXT("Yes") : TEXT("No"),
+                StationaryTime,
+                PredictionStrength
+            );
+            GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Yellow, DebugText);
         }
     }
 
@@ -378,35 +481,58 @@ FCameraPredictionData ASSPlayerController::CorrectPredictionWithServerData(
     FVector LocationError = ServerData.Location - Prediction.Location;
     FRotator RotationError = (ServerData.Rotation - Prediction.Rotation).GetNormalized();
 
-    // 오차가 너무 크면 즉시 보정, 작으면 점진적 보정
     float LocationErrorMagnitude = LocationError.Size();
-    float RotationErrorMagnitude = FMath::Abs(RotationError.Yaw) + FMath::Abs(RotationError.Pitch);
+    float RotationErrorMagnitude = FMath::Sqrt(
+        RotationError.Pitch * RotationError.Pitch +
+        RotationError.Yaw * RotationError.Yaw +
+        RotationError.Roll * RotationError.Roll
+    );
 
     float DeltaTime = GetWorld()->GetDeltaSeconds();
 
-    if (LocationErrorMagnitude > 100.0f) // 1미터 이상 차이나면 즉시 보정
+    // 정지 상태에서는 더 빠른 보정
+    float LocationCorrectionSpeed = CorrectionSpeed;
+    float RotationCorrectionSpeed = CorrectionSpeed;
+
+    if (StationaryTime > 0.2f) // 정지 상태에서는 더 빠른 보정
+    {
+        LocationCorrectionSpeed *= 2.0f;
+        RotationCorrectionSpeed *= 3.0f; // 회전은 특히 빠르게
+    }
+
+    // 위치 보정
+    if (LocationErrorMagnitude > 100.0f) // 1미터 이상
     {
         Corrected.Location = ServerData.Location;
-        UE_LOG(LogTemp, Warning, TEXT("Large location error detected: %.2f, immediate correction"), LocationErrorMagnitude);
+        UE_LOG(LogTemp, Warning, TEXT("Large location error: %.1fcm, immediate correction"), LocationErrorMagnitude);
+    }
+    else if (LocationErrorMagnitude > 5.0f) // 5cm 이상
+    {
+        Corrected.Location = FMath::VInterpTo(Prediction.Location, ServerData.Location, DeltaTime, LocationCorrectionSpeed);
     }
     else
     {
-        // 점진적 보정
-        Corrected.Location = FMath::VInterpTo(Prediction.Location, ServerData.Location, DeltaTime, CorrectionSpeed);
+        // 작은 오차는 서버 데이터 우선
+        Corrected.Location = ServerData.Location;
     }
 
-    if (RotationErrorMagnitude > 10.0f) // 10도 이상 차이나면 즉시 보정
+    // 회전 보정 (더 엄격하게)
+    if (RotationErrorMagnitude > 5.0f) // 5도 이상
     {
         Corrected.Rotation = ServerData.Rotation;
-        UE_LOG(LogTemp, Warning, TEXT("Large rotation error detected: %.2f, immediate correction"), RotationErrorMagnitude);
+        UE_LOG(LogTemp, Warning, TEXT("Large rotation error: %.1f°, immediate correction"), RotationErrorMagnitude);
+    }
+    else if (RotationErrorMagnitude > 1.0f) // 1도 이상
+    {
+        Corrected.Rotation = FMath::RInterpTo(Prediction.Rotation, ServerData.Rotation, DeltaTime, RotationCorrectionSpeed);
     }
     else
     {
-        // 점진적 보정
-        Corrected.Rotation = FMath::RInterpTo(Prediction.Rotation, ServerData.Rotation, DeltaTime, CorrectionSpeed);
+        // 작은 회전 오차는 서버 데이터 우선
+        Corrected.Rotation = ServerData.Rotation;
     }
 
-    // FOV는 즉시 적용 (중요도 낮음)
+    // FOV는 항상 서버 데이터 사용
     Corrected.FOV = ServerData.FOV;
 
     return Corrected;
