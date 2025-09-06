@@ -4,161 +4,149 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
-#include "Engine/Engine.h"
-#include "Components/InputComponent.h"
 #include "SSPlayerController.generated.h"
 
 class ASSDummySpectatorPawn;
 class ASSCameraViewProxy;
-class UCameraComponent;
+class USSGameInstance;
+class ASSGameMode;
 
-// 카메라 예측을 위한 데이터 구조체
-USTRUCT()
+// 프록시가 복제해주는 서버 카메라 데이터(선언만: 실제 정의는 SSCameraViewProxy.h)
+struct FRepCamInfo;
+
+USTRUCT(BlueprintType)
 struct FCameraPredictionData
 {
     GENERATED_BODY()
 
     UPROPERTY()
-    FVector Location = FVector::ZeroVector;
+    FVector  Location = FVector::ZeroVector;
 
     UPROPERTY()
     FRotator Rotation = FRotator::ZeroRotator;
 
     UPROPERTY()
-    float FOV = 90.0f;
+    float    FOV = 90.f;
 
     UPROPERTY()
-    FVector Velocity = FVector::ZeroVector;
+    float    Timestamp = 0.f;
+
+    // 디버그/추정용
+    UPROPERTY()
+    FVector  Velocity = FVector::ZeroVector;        // 선속도 (cm/s)
 
     UPROPERTY()
-    FVector AngularVelocity = FVector::ZeroVector;
-
-    UPROPERTY()
-    float Timestamp = 0.0f;
-
-    FCameraPredictionData()
-    {
-        Location = FVector::ZeroVector;
-        Rotation = FRotator::ZeroRotator;
-        FOV = 90.0f;
-        Velocity = FVector::ZeroVector;
-        AngularVelocity = FVector::ZeroVector;
-        Timestamp = 0.0f;
-    }
+    FVector  AngularVelocity = FVector::ZeroVector; // (deg/s) Pitch, Yaw, Roll
 };
 
-/**
- * 
- */
 UCLASS()
 class SPLITSCREEN_API ASSPlayerController : public APlayerController
 {
-	GENERATED_BODY()
-	
+    GENERATED_BODY()
+
 public:
+    ASSPlayerController();
+
     virtual void BeginPlay() override;
     virtual void Tick(float DeltaTime) override;
+    virtual void SetupInputComponent() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
-    // 더미 컨트롤러 플래그
-    UPROPERTY(BlueprintReadOnly, Category = "Split Screen")
-    bool bIsDummyController = false;
-
-    // 더미 컨트롤러로 설정
-    UFUNCTION(BlueprintCallable, Category = "Split Screen")
-    void SetAsDummyController(bool bDummy = true);
-
-    // 캐시된 프록시 참조
-    UPROPERTY()
-    TWeakObjectPtr<ASSCameraViewProxy> CachedProxy;
+    UFUNCTION(BlueprintCallable)
+    void SetAsDummyController(bool bDummy);
 
 protected:
-    // 네트워크 RPC 함수들
-    UFUNCTION(Server, Reliable, WithValidation)
-    void ServerUpdatePlayerLocation(FVector Location, FRotator Rotation);
-
-    UFUNCTION(Client, Reliable)
-    void ClientReceiveRemotePlayerLocation(FVector Location, FRotator Rotation);
-
-    // 입력 설정
-    virtual void SetupInputComponent() override;
-
-    // 카메라 회전 관련 
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera Prediction")
-    float MinimumMovementThreshold = 5.0f; // 최소 움직임 임계값 (cm)
-
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera Prediction")
-    float MinimumRotationThreshold = 2.0f; // 최소 회전 임계값 (도)
-
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera Prediction")
-    float StationaryPredictionReduction = 0.3f; // 정지 상태일 때 예측 강도 감소
-
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera Prediction")
-    float MaxAngularVelocityMagnitude = 180.0f; // 최대 각속도 제한 (도/초)
-
-private:
-    // 네트워크 업데이트 관련
-    float LocationUpdateInterval = 0.0167f; // 60fps
-    float TimeSinceLastUpdate = 0.0f;
-
-    // 클라이언트용 함수들
+    // ==== 클라 스플릿 스크린 / 더미 세팅 ====
     void SetupClientSplitScreen();
     void CreateClientDummyPawn();
     void StartClientDummySync(ASSDummySpectatorPawn* DummyPawn);
+
+    // 매 틱 동기화(예측/보정 포함)
     void SyncClientDummyWithRemotePlayer(ASSDummySpectatorPawn* DummyPawn);
 
-    // 클라이언트 더미 관련 변수들
+    // 서버 스냅샷 -> 히스토리 축적
+    void UpdateCameraHistory(const FRepCamInfo& ServerCam);
+
+    // 스냅샷 보간 + 제한적 초과보간(회전은 쿼터니언 Slerp)
+    FCameraPredictionData PredictCameraMovement();
+
+    // 임계감쇠형 에러 보정(즉시보정 없음)
+    FCameraPredictionData CorrectPredictionWithServerData(const FCameraPredictionData& Prediction,
+        const FRepCamInfo& ServerData);
+
+    // 결과를 더미 폰에 1회만 적용 (컨트롤러 회전 X)
+    void ApplyPredictedCamera(ASSDummySpectatorPawn* DummyPawn, const FCameraPredictionData& CameraData);
+
+    // 디버그
+    void DebugCameraPrediction();
+
+    // ==== RPCs ====
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerUpdatePlayerLocation(FVector Location, FRotator Rotation);
+    UFUNCTION(Client, Reliable)
+    void ClientReceiveRemotePlayerLocation(FVector Location, FRotator Rotation);
+
+private:
+    // === 상태 플래그 ===
+    UPROPERTY(VisibleAnywhere, Category = "SS|State")
+    bool bClientSplitScreenSetupComplete = false;
+
+    UPROPERTY(VisibleAnywhere, Category = "SS|State")
+    bool bIsDummyController = false;
+
+    // === 더미 폰 / 타이머 ===
     UPROPERTY()
-    ASSDummySpectatorPawn* ClientDummyPawn;
+    ASSDummySpectatorPawn* ClientDummyPawn = nullptr;
 
     FTimerHandle ClientSyncTimerHandle;
 
-    UPROPERTY()
-    bool bClientSplitScreenSetupComplete = false;
+    // === 프록시 캐시 ===
+    TWeakObjectPtr<ASSCameraViewProxy> CachedProxy;
 
-    // === 카메라 예측 시스템 ===
-
-    // 서버로부터 받은 카메라 데이터 히스토리
+    // === 카메라 히스토리/예측 ===
     UPROPERTY()
     TArray<FCameraPredictionData> CameraHistory;
 
-    // 현재 예측된 카메라 상태
     UPROPERTY()
     FCameraPredictionData PredictedCamera;
 
-    // 마지막으로 받은 서버 데이터
     UPROPERTY()
     FCameraPredictionData LastServerCamera;
 
-    // 예측 설정값들
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    float MaxPredictionTime = 0.2f; // 최대 예측 시간 (200ms)
+    UPROPERTY(EditAnywhere, Category = "SS|Prediction", meta = (ClampMin = "2", ClampMax = "64"))
+    int32 MaxHistorySize = 16;
 
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    float CorrectionSpeed = 10.0f; // 서버 데이터로 보정하는 속도
+    // === 보간/예측 파라미터 ===
+    // 렌더 기준 시간 = Now - InterpDelaySec
+    UPROPERTY(EditAnywhere, Category = "SS|Prediction", meta = (ClampMin = "0.01", ClampMax = "0.25"))
+    float InterpDelaySec = 0.09f;
 
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    int32 MaxHistorySize = 10; // 저장할 히스토리 개수
+    // 샘플 부족 시 최대 초과보간 허용
+    UPROPERTY(EditAnywhere, Category = "SS|Prediction", meta = (ClampMin = "0.0", ClampMax = "0.1"))
+    float MaxExtrapolateSec = 0.03f;
 
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    float ImmediateCorrectionLocationThreshold = 100.0f; // 즉시 보정할 위치 오차 임계값 (cm)
+    // 각속도 상한 (deg/s)
+    UPROPERTY(EditAnywhere, Category = "SS|Prediction", meta = (ClampMin = "30.0", ClampMax = "720.0"))
+    float MaxAngularSpeedDeg = 180.f;
 
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    float ImmediateCorrectionRotationThreshold = 10.0f; // 즉시 보정할 회전 오차 임계값 (도)
+    // 정지 판단 선속도(cm/s)
+    UPROPERTY(EditAnywhere, Category = "SS|Prediction", meta = (ClampMin = "0.0", ClampMax = "10.0"))
+    float LinearDeadzoneCmPerS = 1.f;
 
-    // 카메라 예측 관련 함수들
-    void UpdateCameraHistory(const struct FRepCamInfo& ServerCam);
-    FCameraPredictionData PredictCameraMovement();
-    FCameraPredictionData CorrectPredictionWithServerData(const FCameraPredictionData& Prediction, const struct FRepCamInfo& ServerData);
-    void ApplyPredictedCamera(ASSDummySpectatorPawn* DummyPawn, const FCameraPredictionData& CameraData);
+    // 저가속 판단(각가속 deg/s^2)
+    UPROPERTY(EditAnywhere, Category = "SS|Prediction", meta = (ClampMin = "0.0", ClampMax = "45.0"))
+    float AngAccelDeadzoneDegS2 = 5.f;
 
-    // 디버그용 함수
-    UFUNCTION(BlueprintCallable, Category = "Debug")
-    void DebugCameraPrediction();
+    // 에러 보정 임계감쇠 게인(값↑ -> 빠르게 붙음)
+    UPROPERTY(EditAnywhere, Category = "SS|Prediction", meta = (ClampMin = "1.0", ClampMax = "30.0"))
+    float PosErrorGain = 10.f;
 
+    UPROPERTY(EditAnywhere, Category = "SS|Prediction", meta = (ClampMin = "1.0", ClampMax = "30.0"))
+    float RotErrorGain = 10.f;
 
+    // === 네트 위치 브로드캐스트 간격 ===
+    UPROPERTY(EditAnywhere, Category = "SS|Net", meta = (ClampMin = "0.01", ClampMax = "0.2"))
+    float LocationUpdateInterval = 0.05f;
 
-    // 현재 움직임 상태 추적
-    bool bIsMoving = false;
-    bool bIsRotating = false;
-    float StationaryTime = 0.0f;
+    float TimeSinceLastUpdate = 0.f;
 };
