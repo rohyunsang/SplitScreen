@@ -119,7 +119,7 @@ private:
     // === 보간/예측 파라미터 ===
     // 렌더 기준 시간 = Now - InterpDelaySec
     UPROPERTY(EditAnywhere, Category = "SS|Prediction", meta = (ClampMin = "0.01", ClampMax = "0.25"))
-    float InterpDelaySec = 0.09f;
+    float InterpDelaySec = 0.12f;
 
     // 샘플 부족 시 최대 초과보간 허용
     UPROPERTY(EditAnywhere, Category = "SS|Prediction", meta = (ClampMin = "0.0", ClampMax = "0.1"))
@@ -139,10 +139,10 @@ private:
 
     // 에러 보정 임계감쇠 게인(값↑ -> 빠르게 붙음)
     UPROPERTY(EditAnywhere, Category = "SS|Prediction", meta = (ClampMin = "1.0", ClampMax = "30.0"))
-    float PosErrorGain = 10.f;
+    float PosErrorGain = 8.f;
 
     UPROPERTY(EditAnywhere, Category = "SS|Prediction", meta = (ClampMin = "1.0", ClampMax = "30.0"))
-    float RotErrorGain = 10.f;
+    float RotErrorGain = 8.f;
 
     // === 네트 위치 브로드캐스트 간격 ===
     UPROPERTY(EditAnywhere, Category = "SS|Net", meta = (ClampMin = "0.01", ClampMax = "0.2"))

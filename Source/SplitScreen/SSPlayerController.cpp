@@ -110,6 +110,9 @@ void ASSPlayerController::Tick(float DeltaTime)
 
     if (bIsDummyController) return;
 
+    // *** 제거: 별도 위치 업데이트 RPC 비활성화 ***
+    // 이제 모든 카메라 데이터는 ASSCameraViewProxy를 통해 통합 동기화
+    /*
     if (IsLocalController() && GetPawn())
     {
         TimeSinceLastUpdate += DeltaTime;
@@ -120,6 +123,7 @@ void ASSPlayerController::Tick(float DeltaTime)
             TimeSinceLastUpdate = 0.0f;
         }
     }
+    */
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -305,10 +309,14 @@ void ASSPlayerController::SyncClientDummyWithRemotePlayer(ASSDummySpectatorPawn*
 
     const FRepCamInfo& ServerCam = Proxy->GetReplicatedCamera();
 
-    // 2) 새 서버 데이터 감지 -> 히스토리 업데이트
+    // *** 수정: 프록시에서 위치도 함께 가져오도록 변경 ***
+    // ServerCam에 위치 정보가 포함되어 있다고 가정
+    // 만약 없다면 FRepCamInfo 구조체에 Location 추가 필요
+
+    // 2) 새 서버 데이터 감지 -> 히스토리 업데이트 (위치도 포함)
     bool bNewServerData = false;
-    if (!LastServerCamera.Location.Equals(ServerCam.Location, 0.1f) ||
-        !LastServerCamera.Rotation.Equals(ServerCam.Rotation, 0.05f) ||
+    if (!LastServerCamera.Location.Equals(ServerCam.Location, 0.5f) ||  // 임계값 완화
+        !LastServerCamera.Rotation.Equals(ServerCam.Rotation, 0.1f) ||   // 임계값 완화
         FMath::Abs(LastServerCamera.FOV - ServerCam.FOV) > KINDA_SMALL_NUMBER)
     {
         bNewServerData = true;
@@ -318,13 +326,13 @@ void ASSPlayerController::SyncClientDummyWithRemotePlayer(ASSDummySpectatorPawn*
     // 3) 스냅샷 보간/초과보간으로 예측
     FCameraPredictionData Predicted = PredictCameraMovement();
 
-    // 4) 임계감쇠 보정(새 데이터 있을 때)
+    // 4) 임계감쇠 보정(새 데이터 있을 때만)
     if (bNewServerData)
     {
         Predicted = CorrectPredictionWithServerData(Predicted, ServerCam);
     }
 
-    // 5) 적용(회전 단일 적용)
+    // 5) 적용
     ApplyPredictedCamera(DummyPawn, Predicted);
 }
 
@@ -365,6 +373,7 @@ void ASSPlayerController::UpdateCameraHistory(const FRepCamInfo& ServerCam)
     LastServerCamera = NewData;
 }
 
+// *** 추가: 이동 시 스무딩 개선된 예측 함수 ***
 FCameraPredictionData ASSPlayerController::PredictCameraMovement()
 {
     if (CameraHistory.Num() == 0) return PredictedCamera;
@@ -372,7 +381,7 @@ FCameraPredictionData ASSPlayerController::PredictCameraMovement()
     const float Now = GetWorld()->GetTimeSeconds();
     const float RenderTime = Now - InterpDelaySec;
 
-    // RenderTime을 포함하는 최근 샘플 인덱스(>= RenderTime)
+    // RenderTime을 포함하는 최근 샘플 인덱스
     int32 NewerIdx = INDEX_NONE;
     for (int32 i = CameraHistory.Num() - 1; i >= 0; --i)
     {
@@ -393,21 +402,26 @@ FCameraPredictionData ASSPlayerController::PredictCameraMovement()
             return FQuat::Slerp(QA, QB, Alpha).GetNormalized().Rotator();
         };
 
-    auto LinVel = [](const FCameraPredictionData& A, const FCameraPredictionData& B)
+    // *** 수정: 속도 계산 개선 (가중평균 사용) ***
+    auto CalcSmoothedVelocity = [this](int32 FromIdx, int32 ToIdx) -> FVector
         {
-            const float dt = FMath::Max(B.Timestamp - A.Timestamp, 0.0001f);
-            return (B.Location - A.Location) / dt;
-        };
+            if (FromIdx == ToIdx || FromIdx < 0 || ToIdx >= CameraHistory.Num())
+                return FVector::ZeroVector;
 
-    auto AngSpeedDeg = [](const FCameraPredictionData& A, const FCameraPredictionData& B)
-        {
-            const FQuat QA = A.Rotation.Quaternion().GetNormalized();
-            const FQuat QB = B.Rotation.Quaternion().GetNormalized();
-            const FQuat D = QB * QA.Inverse();
-            FVector Axis; float AngleRad;
-            D.ToAxisAndAngle(Axis, AngleRad);
-            const float dt = FMath::Max(B.Timestamp - A.Timestamp, 0.0001f);
-            return FMath::RadiansToDegrees(FMath::Abs(AngleRad)) / dt;
+            FVector TotalVel = FVector::ZeroVector;
+            float TotalWeight = 0.f;
+
+            for (int32 i = FromIdx; i < ToIdx; ++i)
+            {
+                const float dt = FMath::Max(CameraHistory[i + 1].Timestamp - CameraHistory[i].Timestamp, 0.0001f);
+                const FVector vel = (CameraHistory[i + 1].Location - CameraHistory[i].Location) / dt;
+                const float weight = 1.f / (ToIdx - i); // 최근일수록 높은 가중치
+
+                TotalVel += vel * weight;
+                TotalWeight += weight;
+            }
+
+            return TotalWeight > 0.f ? TotalVel / TotalWeight : FVector::ZeroVector;
         };
 
     // --- 스냅샷 보간 ---
@@ -426,38 +440,37 @@ FCameraPredictionData ASSPlayerController::PredictCameraMovement()
         return Out;
     }
 
-    // --- 초과보간(최대 MaxExtrapolateSec) ---
+    // --- 초과보간 (이동 중 떨림 방지 개선) ---
     const auto& Latest = CameraHistory.Last();
-    if (CameraHistory.Num() >= 2)
+    if (CameraHistory.Num() >= 3) // 최소 3개 샘플 필요
     {
-        const auto& Prev = CameraHistory[CameraHistory.Num() - 2];
         const float LeadRaw = RenderTime - Latest.Timestamp;
         const float Lead = FMath::Clamp(LeadRaw, 0.f, MaxExtrapolateSec);
 
-        // 히스테리시스: 정지 + 저가속이면 예측 OFF
-        const FVector vLin = LinVel(Prev, Latest);
-        const float   wDeg = AngSpeedDeg(Prev, Latest);
-        const float   wPrev = (CameraHistory.Num() >= 3)
-            ? AngSpeedDeg(CameraHistory[CameraHistory.Num() - 3], Prev)
-            : wDeg;
-        const bool bStopAndLowAccel =
-            (vLin.Size() < LinearDeadzoneCmPerS) &&
-            (FMath::Abs(wDeg - wPrev) < AngAccelDeadzoneDegS2);
+        // *** 개선: 다중 샘플 기반 스무딩된 속도 계산 ***
+        const int32 SampleCount = FMath::Min(3, CameraHistory.Num() - 1);
+        const FVector vLin = CalcSmoothedVelocity(CameraHistory.Num() - 1 - SampleCount, CameraHistory.Num() - 1);
 
-        const float UsedLead = bStopAndLowAccel ? 0.f : Lead;
-
-        // 위치
-        FVector pos = Latest.Location + vLin * UsedLead;
-
-        // 회전(축-각 속도 상한)
+        // 각속도 계산 (최근 2개 샘플)
+        const auto& Prev = CameraHistory[CameraHistory.Num() - 2];
         const FQuat Q0 = Prev.Rotation.Quaternion().GetNormalized();
         const FQuat Q1 = Latest.Rotation.Quaternion().GetNormalized();
         const FQuat D = Q1 * Q0.Inverse();
 
         FVector Axis; float AngleRad;
         D.ToAxisAndAngle(Axis, AngleRad);
-
         const float dt = FMath::Max(Latest.Timestamp - Prev.Timestamp, 0.0001f);
+        const float wDeg = FMath::RadiansToDegrees(FMath::Abs(AngleRad)) / dt;
+
+        // *** 수정: 이동 중에는 예측을 더 보수적으로 ***
+        const bool bIsMoving = vLin.Size() > LinearDeadzoneCmPerS;
+        const float PredictionScale = bIsMoving ? 0.7f : 1.0f; // 이동 중 예측 강도 감소
+        const float UsedLead = Lead * PredictionScale;
+
+        // 위치 예측
+        FVector pos = Latest.Location + vLin * UsedLead;
+
+        // 회전 예측 (각속도 제한)
         const float wRad = FMath::Min(FMath::Abs(AngleRad) / dt,
             FMath::DegreesToRadians(MaxAngularSpeedDeg));
         const FQuat QEx = FQuat((Axis.IsNearlyZero() ? FVector::UpVector : Axis.GetSafeNormal()),
@@ -470,11 +483,12 @@ FCameraPredictionData ASSPlayerController::PredictCameraMovement()
         return Out;
     }
 
-    // 샘플 하나뿐이면 그대로
+    // 샘플 부족시 최신 데이터 사용
     PredictedCamera = Latest;
     return Latest;
 }
 
+// *** 수정: 보정 강도 조정 ***
 FCameraPredictionData ASSPlayerController::CorrectPredictionWithServerData(
     const FCameraPredictionData& Prediction,
     const FRepCamInfo& ServerData)
@@ -482,8 +496,18 @@ FCameraPredictionData ASSPlayerController::CorrectPredictionWithServerData(
     FCameraPredictionData Corrected = Prediction;
 
     const float Dt = FMath::Max(GetWorld()->GetDeltaSeconds(), 0.0001f);
-    const float aP = CritDampedAlpha(PosErrorGain, Dt);
-    const float aR = CritDampedAlpha(RotErrorGain, Dt);
+
+    // *** 개선: 이동 상태에 따른 적응적 보정 강도 ***
+    const FVector PredictedVel = (CameraHistory.Num() >= 2) ?
+        CameraHistory.Last().Velocity : FVector::ZeroVector;
+    const bool bIsMoving = PredictedVel.Size() > LinearDeadzoneCmPerS;
+
+    // 이동 중에는 더 부드러운 보정
+    const float PosGain = bIsMoving ? PosErrorGain * 0.6f : PosErrorGain;
+    const float RotGain = bIsMoving ? RotErrorGain * 0.6f : RotErrorGain;
+
+    const float aP = CritDampedAlpha(PosGain, Dt);
+    const float aR = CritDampedAlpha(RotGain, Dt);
 
     // 위치: 임계감쇠형 선형 보정
     Corrected.Location = FMath::Lerp(Prediction.Location, ServerData.Location, aP);
@@ -505,7 +529,7 @@ void ASSPlayerController::ApplyPredictedCamera(ASSDummySpectatorPawn* DummyPawn,
     DummyPawn->SetActorLocation(CameraData.Location);
     DummyPawn->SetActorRotation(CameraData.Rotation);
 
-    //  이중 회전 방지: 컨트롤러 회전 적용 금지
+   
     if (APlayerController* DummyController = Cast<APlayerController>(DummyPawn->GetController()))
     {
         DummyController->SetControlRotation(CameraData.Rotation);
