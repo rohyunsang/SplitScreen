@@ -6,11 +6,13 @@
 #include "GameFramework/PlayerController.h"
 #include "Engine/Engine.h"
 #include "Components/InputComponent.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "SSPlayerController.generated.h"
 
 class ASSDummySpectatorPawn;
 class ASSCameraViewProxy;
 class UCameraComponent;
+class ACharacter;
 
 // 카메라 예측을 위한 데이터 구조체
 USTRUCT()
@@ -102,43 +104,45 @@ private:
     UPROPERTY()
     bool bClientSplitScreenSetupComplete = false;
 
-    // === 카메라 예측 시스템 ===
+    // === CharacterMovement 기반 동기화 시스템 ===
 
-    // 서버로부터 받은 카메라 데이터 히스토리
+    // 타겟 캐릭터와 관련 컴포넌트들
     UPROPERTY()
-    TArray<FCameraPredictionData> CameraHistory;
+    TWeakObjectPtr<ACharacter> TargetCharacter;
 
-    // 현재 예측된 카메라 상태
     UPROPERTY()
-    FCameraPredictionData PredictedCamera;
+    TWeakObjectPtr<UCharacterMovementComponent> TargetMovementComponent;
 
-    // 마지막으로 받은 서버 데이터
     UPROPERTY()
-    FCameraPredictionData LastServerCamera;
+    TWeakObjectPtr<UCameraComponent> TargetCameraComponent;
 
-    // 예측 설정값들
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    float MaxPredictionTime = 0.2f; // 최대 예측 시간 (200ms)
+    // 동기화 설정
+    UPROPERTY(EditAnywhere, Category = "Movement Sync")
+    float MovementSyncRate = 120.0f; // 초당 동기화 횟수
 
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    float CorrectionSpeed = 10.0f; // 서버 데이터로 보정하는 속도
+    UPROPERTY(EditAnywhere, Category = "Movement Sync")
+    float CameraSmoothingSpeed = 15.0f; // 카메라 보간 속도
 
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    int32 MaxHistorySize = 10; // 저장할 히스토리 개수
+    UPROPERTY(EditAnywhere, Category = "Movement Sync")
+    bool bUsePredictiveSync = true; // CharacterMovement의 prediction 사용 여부
 
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    float ImmediateCorrectionLocationThreshold = 100.0f; // 즉시 보정할 위치 오차 임계값 (cm)
+    UPROPERTY(EditAnywhere, Category = "Movement Sync")
+    float MaxSyncDistance = 1000.0f; // 최대 동기화 거리 (너무 멀면 텔레포트)
 
-    UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    float ImmediateCorrectionRotationThreshold = 10.0f; // 즉시 보정할 회전 오차 임계값 (도)
+    // 이전 프레임 데이터 저장용
+    FVector LastKnownLocation;
+    FRotator LastKnownRotation;
+    FVector LastKnownVelocity;
+    float LastSyncTime;
 
-    // 카메라 예측 관련 함수들
-    void UpdateCameraHistory(const struct FRepCamInfo& ServerCam);
-    FCameraPredictionData PredictCameraMovement();
-    FCameraPredictionData CorrectPredictionWithServerData(const FCameraPredictionData& Prediction, const struct FRepCamInfo& ServerData);
-    void ApplyPredictedCamera(ASSDummySpectatorPawn* DummyPawn, const FCameraPredictionData& CameraData);
+    // CharacterMovement 기반 동기화 함수들
+    void FindAndSetTargetCharacter();
+    void SyncCameraWithCharacterMovement(ASSDummySpectatorPawn* DummyPawn);
+    void ApplyCharacterMovementPrediction(ASSDummySpectatorPawn* DummyPawn);
+    FVector PredictCharacterLocation(const FVector& CurrentLocation, const FVector& Velocity, float DeltaTime);
+    void UpdateCameraFromCharacter(ASSDummySpectatorPawn* DummyPawn, const FVector& PredictedLocation, const FRotator& CharacterRotation);
 
     // 디버그용 함수
     UFUNCTION(BlueprintCallable, Category = "Debug")
-    void DebugCameraPrediction();
+    void DebugMovementSync();
 };

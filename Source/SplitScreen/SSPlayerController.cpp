@@ -1,18 +1,17 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
-
 #include "SSPlayerController.h"
 #include "SSGameMode.h"
 #include "SSGameInstance.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "SSDummySpectatorPawn.h"
 #include "Camera/CameraComponent.h"
 #include "HAL/PlatformMisc.h"
 #include "EngineUtils.h"
-#include "GameFramework/Character.h"
 #include "SSCameraViewProxy.h"
-
 
 void ASSPlayerController::BeginPlay()
 {
@@ -111,7 +110,6 @@ void ASSPlayerController::SetupClientSplitScreen()
     }
 }
 
-// SSPlayerController.cpp - CreateClientDummyPawn 함수 수정
 void ASSPlayerController::CreateClientDummyPawn()
 {
     UE_LOG(LogTemp, Warning, TEXT("SS Creating client dummy pawn"));
@@ -136,9 +134,7 @@ void ASSPlayerController::CreateClientDummyPawn()
     {
         UE_LOG(LogTemp, Warning, TEXT("SS Client dummy pawn created successfully"));
 
-        // *** 중요: 더미 컨트롤러를 새로 생성하지 않고 기존 것 활용 ***
-
-        // 1) 먼저 기존 더미 컨트롤러 찾기
+        // 더미 컨트롤러 설정 (기존 코드와 동일)
         ASSPlayerController* ExistingDummyController = nullptr;
         for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
         {
@@ -153,17 +149,14 @@ void ASSPlayerController::CreateClientDummyPawn()
 
         ASSPlayerController* DummyController = ExistingDummyController;
 
-        // 2) 기존 더미 컨트롤러가 없을 때만 새로 생성
         if (!DummyController)
         {
-            // 새 컨트롤러 생성 전에 정말 필요한지 다시 체크
             UGameInstance* GameInstance = GetGameInstance();
             if (GameInstance && GameInstance->GetNumLocalPlayers() >= 2)
             {
                 ULocalPlayer* SecondLocalPlayer = GameInstance->GetLocalPlayerByIndex(1);
                 if (SecondLocalPlayer && !SecondLocalPlayer->PlayerController)
                 {
-                    // 두 번째 LocalPlayer에 컨트롤러가 없을 때만 생성
                     DummyController = GetWorld()->SpawnActor<ASSPlayerController>();
                     if (DummyController)
                     {
@@ -174,7 +167,6 @@ void ASSPlayerController::CreateClientDummyPawn()
                 else
                 {
                     UE_LOG(LogTemp, Warning, TEXT("SS SecondLocalPlayer already has controller, skipping creation"));
-                    // 이미 컨트롤러가 있다면 그것을 사용
                     if (SecondLocalPlayer->PlayerController)
                     {
                         if (ASSPlayerController* SSPC = Cast<ASSPlayerController>(SecondLocalPlayer->PlayerController))
@@ -187,7 +179,6 @@ void ASSPlayerController::CreateClientDummyPawn()
             }
         }
 
-        // 3) 컨트롤러 설정
         if (DummyController)
         {
             UGameInstance* GameInstance = GetGameInstance();
@@ -196,13 +187,11 @@ void ASSPlayerController::CreateClientDummyPawn()
                 ULocalPlayer* SecondLocalPlayer = GameInstance->GetLocalPlayerByIndex(1);
                 if (SecondLocalPlayer)
                 {
-                    // 기존 연결이 없을 때만 설정
                     if (!SecondLocalPlayer->PlayerController || SecondLocalPlayer->PlayerController != DummyController)
                     {
                         DummyController->SetPlayer(SecondLocalPlayer);
                     }
 
-                    // 폰이 소유되지 않았을 때만 Possess
                     if (!ClientDummyPawn->GetController() || ClientDummyPawn->GetController() != DummyController)
                     {
                         DummyController->Possess(ClientDummyPawn);
@@ -213,7 +202,7 @@ void ASSPlayerController::CreateClientDummyPawn()
             }
         }
 
-        // 4) 클라이언트 동기화 시작 (한 번만)
+        // CharacterMovement 기반 동기화 시작
         if (!GetWorldTimerManager().IsTimerActive(ClientSyncTimerHandle))
         {
             StartClientDummySync(ClientDummyPawn);
@@ -225,7 +214,6 @@ void ASSPlayerController::CreateClientDummyPawn()
     }
 }
 
-
 void ASSPlayerController::StartClientDummySync(ASSDummySpectatorPawn* DummyPawn)
 {
     if (!DummyPawn)
@@ -234,16 +222,20 @@ void ASSPlayerController::StartClientDummySync(ASSDummySpectatorPawn* DummyPawn)
         return;
     }
 
-    UE_LOG(LogTemp, Warning, TEXT("SS Starting client dummy sync"));
+    UE_LOG(LogTemp, Warning, TEXT("SS Starting client dummy sync with CharacterMovement"));
 
-    // 클라이언트에서 원격 플레이어와 동기화
+    // 타겟 캐릭터 찾기
+    FindAndSetTargetCharacter();
+
+    // 동기화 타이머 설정 (MovementSyncRate에 맞춰)
+    float SyncInterval = 1.0f / MovementSyncRate;
     GetWorldTimerManager().SetTimer(
         ClientSyncTimerHandle,
         [this, DummyPawn]()
         {
             SyncClientDummyWithRemotePlayer(DummyPawn);
         },
-        0.0083f, 
+        SyncInterval,
         true
     );
 }
@@ -252,193 +244,239 @@ void ASSPlayerController::SyncClientDummyWithRemotePlayer(ASSDummySpectatorPawn*
 {
     if (!DummyPawn) return;
 
-    // 1) 프록시에서 최신 서버 카메라 데이터 가져오기
-    ASSCameraViewProxy* Proxy = CachedProxy.Get();
-    if (!Proxy)
+    // 타겟 캐릭터가 유효하지 않으면 다시 찾기
+    if (!TargetCharacter.IsValid() || !TargetMovementComponent.IsValid())
     {
-        for (TActorIterator<ASSCameraViewProxy> It(GetWorld()); It; ++It)
-        {
-            Proxy = *It;
-            break;
-        }
-        if (!Proxy) return;
-        CachedProxy = Proxy;
+        FindAndSetTargetCharacter();
+        if (!TargetCharacter.IsValid()) return;
     }
 
-    const FRepCamInfo& ServerCam = Proxy->GetReplicatedCamera();
-
-    // 2) 새로운 서버 데이터가 도착했는지 확인
-    bool bNewServerData = false;
-    if (!LastServerCamera.Location.Equals(ServerCam.Location, 1.0f) ||
-        !LastServerCamera.Rotation.Equals(ServerCam.Rotation, 1.0f))
-    {
-        bNewServerData = true;
-        UpdateCameraHistory(ServerCam);
-    }
-
-    // 3) 카메라 위치 예측 수행
-    FCameraPredictionData PredictedState = PredictCameraMovement();
-
-    // 4) 서버 데이터로 예측 보정 (새 데이터가 있을 때만)
-    if (bNewServerData)
-    {
-        PredictedState = CorrectPredictionWithServerData(PredictedState, ServerCam);
-    }
-
-    // 5) 더미 폰에 예측된 카메라 적용
-    ApplyPredictedCamera(DummyPawn, PredictedState);
+    // CharacterMovement 기반 동기화 수행
+    SyncCameraWithCharacterMovement(DummyPawn);
 }
 
-void ASSPlayerController::UpdateCameraHistory(const FRepCamInfo& ServerCam)
+void ASSPlayerController::FindAndSetTargetCharacter()
 {
-    FCameraPredictionData NewData;
-    NewData.Location = ServerCam.Location;
-    NewData.Rotation = ServerCam.Rotation;
-    NewData.FOV = ServerCam.FOV;
-    NewData.Timestamp = GetWorld()->GetTimeSeconds();
-
-    // 속도 계산 (이전 데이터가 있는 경우)
-    if (CameraHistory.Num() > 0)
+    // 원격 플레이어의 캐릭터 찾기
+    for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
     {
-        const FCameraPredictionData& LastData = CameraHistory.Last();
-        float DeltaTime = NewData.Timestamp - LastData.Timestamp;
-
-        if (DeltaTime > 0.0f)
+        APlayerController* PC = It->Get();
+        if (PC && PC != this && !PC->IsLocalPlayerController())
         {
-            // 선형 속도 계산
-            NewData.Velocity = (NewData.Location - LastData.Location) / DeltaTime;
+            if (ACharacter* RemoteCharacter = Cast<ACharacter>(PC->GetPawn()))
+            {
+                TargetCharacter = RemoteCharacter;
+                TargetMovementComponent = RemoteCharacter->GetCharacterMovement();
+                TargetCameraComponent = RemoteCharacter->FindComponentByClass<UCameraComponent>();
 
-            // 각속도 계산 (단순화된 버전)
-            FRotator DeltaRotation = (NewData.Rotation - LastData.Rotation).GetNormalized();
-            NewData.AngularVelocity = FVector(DeltaRotation.Pitch, DeltaRotation.Yaw, DeltaRotation.Roll) / DeltaTime;
+                UE_LOG(LogTemp, Warning, TEXT("SS Found target character: %s"),
+                    *RemoteCharacter->GetName());
+
+                if (TargetCameraComponent.IsValid())
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("SS Found target camera in character"));
+                }
+
+                // 초기 데이터 설정
+                LastKnownLocation = RemoteCharacter->GetActorLocation();
+                LastKnownRotation = RemoteCharacter->GetActorRotation();
+                if (TargetMovementComponent.IsValid())
+                {
+                    LastKnownVelocity = TargetMovementComponent->Velocity;
+                }
+                LastSyncTime = GetWorld()->GetTimeSeconds();
+
+                return;
+            }
         }
     }
 
-    // 히스토리에 추가
-    CameraHistory.Add(NewData);
-
-    // 히스토리 크기 제한
-    if (CameraHistory.Num() > MaxHistorySize)
-    {
-        CameraHistory.RemoveAt(0);
-    }
-
-    // 마지막 서버 데이터 업데이트
-    LastServerCamera = NewData;
+    UE_LOG(LogTemp, Warning, TEXT("SS No target character found"));
 }
 
-FCameraPredictionData ASSPlayerController::PredictCameraMovement()
+void ASSPlayerController::SyncCameraWithCharacterMovement(ASSDummySpectatorPawn* DummyPawn)
 {
-    if (CameraHistory.Num() == 0)
+    if (!TargetCharacter.IsValid() || !TargetMovementComponent.IsValid())
     {
-        return PredictedCamera; // 데이터가 없으면 이전 예측값 유지
+        return;
     }
 
-    const FCameraPredictionData& LatestData = CameraHistory.Last();
+    ACharacter* RemoteCharacter = TargetCharacter.Get();
+    UCharacterMovementComponent* MovementComp = TargetMovementComponent.Get();
+
+    // 현재 프레임의 실제 데이터
+    FVector CurrentLocation = RemoteCharacter->GetActorLocation();
+    FRotator CurrentRotation = RemoteCharacter->GetActorRotation();
+    FVector CurrentVelocity = MovementComp->Velocity;
     float CurrentTime = GetWorld()->GetTimeSeconds();
-    float PredictionDelta = FMath::Clamp(CurrentTime - LatestData.Timestamp, 0.0f, MaxPredictionTime);
 
-    FCameraPredictionData Predicted = LatestData;
+    FVector TargetCameraLocation = CurrentLocation;
+    FRotator TargetCameraRotation = CurrentRotation;
 
-    if (PredictionDelta > 0.0f && CameraHistory.Num() >= 2)
+    // 카메라가 있으면 카메라 위치/회전 사용
+    if (TargetCameraComponent.IsValid())
     {
-        // 속도 기반 예측
-        Predicted.Location = LatestData.Location + (LatestData.Velocity * PredictionDelta);
+        TargetCameraLocation = TargetCameraComponent->GetComponentLocation();
+        TargetCameraRotation = TargetCameraComponent->GetComponentRotation();
+    }
 
-        // 회전 예측 (각속도 적용)
-        FRotator PredictedRotation = LatestData.Rotation;
-        PredictedRotation.Pitch += LatestData.AngularVelocity.X * PredictionDelta;
-        PredictedRotation.Yaw += LatestData.AngularVelocity.Y * PredictionDelta;
-        PredictedRotation.Roll += LatestData.AngularVelocity.Z * PredictionDelta;
-        Predicted.Rotation = PredictedRotation.GetNormalized();
+    // CharacterMovement의 prediction 활용
+    if (bUsePredictiveSync && MovementComp->GetPredictionData_Client())
+    {
+        ApplyCharacterMovementPrediction(DummyPawn);
+    }
+    else
+    {
+        // 기본 동기화 (보간 적용)
+        FVector CurrentDummyLocation = DummyPawn->GetActorLocation();
+        FRotator CurrentDummyRotation = DummyPawn->GetActorRotation();
 
-        // 가속도 기반 보정 (2차 예측)
-        if (CameraHistory.Num() >= 3)
+        // 거리 체크 - 너무 멀면 즉시 이동
+        float Distance = FVector::Dist(CurrentDummyLocation, TargetCameraLocation);
+        if (Distance > MaxSyncDistance)
         {
-            const FCameraPredictionData& PrevData = CameraHistory[CameraHistory.Num() - 2];
-            FVector Acceleration = (LatestData.Velocity - PrevData.Velocity) /
-                FMath::Max(LatestData.Timestamp - PrevData.Timestamp, 0.001f);
+            DummyPawn->SetActorLocation(TargetCameraLocation);
+            DummyPawn->SetActorRotation(TargetCameraRotation);
+            UE_LOG(LogTemp, Warning, TEXT("SS Large distance detected: %.2f, teleporting"), Distance);
+        }
+        else
+        {
+            // 부드러운 보간
+            float DeltaTime = GetWorld()->GetDeltaSeconds();
+            FVector NewLocation = FMath::VInterpTo(CurrentDummyLocation, TargetCameraLocation, DeltaTime, CameraSmoothingSpeed);
+            FRotator NewRotation = FMath::RInterpTo(CurrentDummyRotation, TargetCameraRotation, DeltaTime, CameraSmoothingSpeed);
 
-            // 가속도를 고려한 위치 보정
-            Predicted.Location += 0.5f * Acceleration * PredictionDelta * PredictionDelta;
+            DummyPawn->SetActorLocation(NewLocation);
+            DummyPawn->SetActorRotation(NewRotation);
         }
     }
 
-    PredictedCamera = Predicted;
-    return Predicted;
+    // 컨트롤러 회전 동기화
+    if (APlayerController* DummyController = Cast<APlayerController>(DummyPawn->GetController()))
+    {
+        if (TargetCameraComponent.IsValid())
+        {
+            DummyController->SetControlRotation(TargetCameraComponent->GetComponentRotation());
+        }
+        else
+        {
+            // 카메라가 없으면 캐릭터의 컨트롤 회전 사용
+            if (APlayerController* TargetPC = Cast<APlayerController>(RemoteCharacter->GetController()))
+            {
+                DummyController->SetControlRotation(TargetPC->GetControlRotation());
+            }
+        }
+    }
+
+    // 이전 프레임 데이터 업데이트
+    LastKnownLocation = CurrentLocation;
+    LastKnownRotation = CurrentRotation;
+    LastKnownVelocity = CurrentVelocity;
+    LastSyncTime = CurrentTime;
 }
 
-FCameraPredictionData ASSPlayerController::CorrectPredictionWithServerData(
-    const FCameraPredictionData& Prediction,
-    const FRepCamInfo& ServerData)
+void ASSPlayerController::ApplyCharacterMovementPrediction(ASSDummySpectatorPawn* DummyPawn)
 {
-    FCameraPredictionData Corrected = Prediction;
+    if (!TargetCharacter.IsValid() || !TargetMovementComponent.IsValid())
+    {
+        return;
+    }
 
-    // 서버 데이터와 예측 사이의 오차 계산
-    FVector LocationError = ServerData.Location - Prediction.Location;
-    FRotator RotationError = (ServerData.Rotation - Prediction.Rotation).GetNormalized();
+    ACharacter* RemoteCharacter = TargetCharacter.Get();
+    UCharacterMovementComponent* MovementComp = TargetMovementComponent.Get();
 
-    // 오차가 너무 크면 즉시 보정, 작으면 점진적 보정
-    float LocationErrorMagnitude = LocationError.Size();
-    float RotationErrorMagnitude = FMath::Abs(RotationError.Yaw) + FMath::Abs(RotationError.Pitch);
+    // CharacterMovement의 현재 상태
+    FVector CurrentLocation = RemoteCharacter->GetActorLocation();
+    FVector CurrentVelocity = MovementComp->Velocity;
+    FRotator CurrentRotation = RemoteCharacter->GetActorRotation();
+
+    // 예측 시간 계산 (네트워크 지연 보상)
+    float DeltaTime = GetWorld()->GetDeltaSeconds();
+    float PredictionTime = DeltaTime * 2.0f; // 기본적으로 2프레임 앞을 예측
+
+    // CharacterMovement의 prediction 정보 활용
+    FVector PredictedLocation = PredictCharacterLocation(CurrentLocation, CurrentVelocity, PredictionTime);
+
+    // 카메라 위치 계산
+    FVector TargetCameraLocation = PredictedLocation;
+    FRotator TargetCameraRotation = CurrentRotation;
+
+    if (TargetCameraComponent.IsValid())
+    {
+        // 카메라 오프셋 계산 (캐릭터 위치 대비 카메라의 상대 위치)
+        FVector CameraOffset = TargetCameraComponent->GetComponentLocation() - CurrentLocation;
+        TargetCameraLocation = PredictedLocation + CameraOffset;
+        TargetCameraRotation = TargetCameraComponent->GetComponentRotation();
+    }
+
+    // 더미 폰에 예측된 카메라 적용
+    UpdateCameraFromCharacter(DummyPawn, TargetCameraLocation, TargetCameraRotation);
+}
+
+FVector ASSPlayerController::PredictCharacterLocation(const FVector& CurrentLocation, const FVector& Velocity, float DeltaTime)
+{
+    if (!TargetMovementComponent.IsValid())
+    {
+        return CurrentLocation;
+    }
+
+    UCharacterMovementComponent* MovementComp = TargetMovementComponent.Get();
+
+    // 기본 선형 예측
+    FVector PredictedLocation = CurrentLocation + (Velocity * DeltaTime);
+
+    // 중력 적용 (공중에 있을 때)
+    if (MovementComp->IsFalling())
+    {
+        float GravityZ = MovementComp->GetGravityZ();
+        // 중력에 의한 가속도 적용: s = ut + 0.5*a*t^2
+        PredictedLocation.Z += 0.5f * GravityZ * DeltaTime * DeltaTime;
+    }
+
+    // 땅에 붙어있을 때는 Z축 고정 (선택적)
+    if (MovementComp->IsMovingOnGround())
+    {
+        // 필요시 지면 추적 로직 추가
+    }
+
+    return PredictedLocation;
+}
+
+void ASSPlayerController::UpdateCameraFromCharacter(ASSDummySpectatorPawn* DummyPawn, const FVector& PredictedLocation, const FRotator& CharacterRotation)
+{
+    FVector CurrentDummyLocation = DummyPawn->GetActorLocation();
+    FRotator CurrentDummyRotation = DummyPawn->GetActorRotation();
 
     float DeltaTime = GetWorld()->GetDeltaSeconds();
 
-    if (LocationErrorMagnitude > 100.0f) // 1미터 이상 차이나면 즉시 보정
+    // 거리 체크
+    float Distance = FVector::Dist(CurrentDummyLocation, PredictedLocation);
+    if (Distance > MaxSyncDistance)
     {
-        Corrected.Location = ServerData.Location;
-        UE_LOG(LogTemp, Warning, TEXT("Large location error detected: %.2f, immediate correction"), LocationErrorMagnitude);
+        // 즉시 이동
+        DummyPawn->SetActorLocation(PredictedLocation);
+        DummyPawn->SetActorRotation(CharacterRotation);
     }
     else
     {
-        // 점진적 보정
-        Corrected.Location = FMath::VInterpTo(Prediction.Location, ServerData.Location, DeltaTime, CorrectionSpeed);
-    }
+        // 부드러운 보간
+        FVector NewLocation = FMath::VInterpTo(CurrentDummyLocation, PredictedLocation, DeltaTime, CameraSmoothingSpeed);
+        FRotator NewRotation = FMath::RInterpTo(CurrentDummyRotation, CharacterRotation, DeltaTime, CameraSmoothingSpeed);
 
-    if (RotationErrorMagnitude > 10.0f) // 10도 이상 차이나면 즉시 보정
-    {
-        Corrected.Rotation = ServerData.Rotation;
-        UE_LOG(LogTemp, Warning, TEXT("Large rotation error detected: %.2f, immediate correction"), RotationErrorMagnitude);
-    }
-    else
-    {
-        // 점진적 보정
-        Corrected.Rotation = FMath::RInterpTo(Prediction.Rotation, ServerData.Rotation, DeltaTime, CorrectionSpeed);
-    }
-
-    // FOV는 즉시 적용 (중요도 낮음)
-    Corrected.FOV = ServerData.FOV;
-
-    return Corrected;
-}
-
-void ASSPlayerController::ApplyPredictedCamera(ASSDummySpectatorPawn* DummyPawn, const FCameraPredictionData& CameraData)
-{
-    // 더미 폰 위치/회전 적용
-    DummyPawn->SetActorLocation(CameraData.Location);
-    DummyPawn->SetActorRotation(CameraData.Rotation);
-
-    // 컨트롤러 회전도 동기화
-    if (APlayerController* DummyController = Cast<APlayerController>(DummyPawn->GetController()))
-    {
-        DummyController->SetControlRotation(CameraData.Rotation);
-    }
-
-    // 카메라 FOV 적용
-    if (UCameraComponent* Camera = DummyPawn->FindComponentByClass<UCameraComponent>())
-    {
-        Camera->SetFieldOfView(CameraData.FOV);
+        DummyPawn->SetActorLocation(NewLocation);
+        DummyPawn->SetActorRotation(NewRotation);
     }
 }
 
-// 디버그용 함수 (선택적으로 사용)
-void ASSPlayerController::DebugCameraPrediction()
+void ASSPlayerController::DebugMovementSync()
 {
-    if (CameraHistory.Num() > 0)
+    if (TargetCharacter.IsValid() && TargetMovementComponent.IsValid())
     {
-        const FCameraPredictionData& Latest = CameraHistory.Last();
-        UE_LOG(LogTemp, Log, TEXT("Camera Prediction - Velocity: %s, History Size: %d"),
-            *Latest.Velocity.ToString(), CameraHistory.Num());
+        UCharacterMovementComponent* MovementComp = TargetMovementComponent.Get();
+        UE_LOG(LogTemp, Log, TEXT("Movement Sync - Velocity: %s, IsGrounded: %s, IsFalling: %s"),
+            *MovementComp->Velocity.ToString(),
+            MovementComp->IsMovingOnGround() ? TEXT("Yes") : TEXT("No"),
+            MovementComp->IsFalling() ? TEXT("Yes") : TEXT("No"));
     }
 }
 
@@ -491,7 +529,7 @@ void ASSPlayerController::ServerUpdatePlayerLocation_Implementation(FVector Loca
         // 모든 다른 클라이언트에게 이 플레이어의 위치 전송
         for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
         {
-            ASSPlayerController* OtherPC = Cast<ASSPlayerController>(*It);
+            ASSPlayerController* OtherPC = Cast<ASSPlayerController>(It->Get());
             if (OtherPC && OtherPC != this)
             {
                 OtherPC->ClientReceiveRemotePlayerLocation(Location, Rotation);
@@ -510,26 +548,3 @@ void ASSPlayerController::ClientReceiveRemotePlayerLocation_Implementation(FVect
     // 받은 원격 플레이어 위치 정보 로그
     // UE_LOG(LogTemp, Log, TEXT("SS Received remote player location: %s"), *Location.ToString());
 }
-
-/*
-// 추가: PlayerController 정리 함수
-void ASSPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
-{
-    // 타이머 정리
-    if (GetWorldTimerManager().IsTimerActive(ClientSyncTimerHandle))
-    {
-        GetWorldTimerManager().ClearTimer(ClientSyncTimerHandle);
-        UE_LOG(LogTemp, Log, TEXT("SS Cleared sync timer for controller: %s"), *GetName());
-    }
-
-    // 더미 컨트롤러인 경우 추가 정리
-    if (bIsDummyController)
-    {
-        UE_LOG(LogTemp, Log, TEXT("SS Dummy controller %s ending play"), *GetName());
-    }
-
-    Super::EndPlay(EndPlayReason);
-}
-
-
-*/
