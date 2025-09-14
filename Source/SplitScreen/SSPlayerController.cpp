@@ -415,31 +415,20 @@ FCameraPredictionData ASSPlayerController::CorrectPredictionWithServerData(
 void ASSPlayerController::ApplyPredictedCamera(ASSDummySpectatorPawn* DummyPawn, const FCameraPredictionData& CameraData)
 {
     // 더미 폰 위치/회전 적용
-   /* DummyPawn->SetActorLocation(CameraData.Location);
-    DummyPawn->SetActorRotation(CameraData.Rotation);*/
+    DummyPawn->SetActorLocation(CameraData.Location);
+    DummyPawn->SetActorRotation(CameraData.Rotation);
 
-    //ACharacter* TempCharacter = Cast<ACharacter>(GetPawn());
-    //if (TempCharacter)
-    //{
-    //    DummyPawn->SetActorLocation(TempCharacter->GetActorLocation());
-    //    DummyPawn->SetActorRotation(TempCharacter->GetActorRotation());
-    //}
+    // 컨트롤러 회전도 동기화
+    if (APlayerController* DummyController = Cast<APlayerController>(DummyPawn->GetController()))
+    {
+        DummyController->SetControlRotation(CameraData.Rotation);
+    }
 
-    //// 컨트롤러 회전도 동기화
-    //if (APlayerController* DummyController = Cast<APlayerController>(DummyPawn->GetController()))
-    //{
-    //    //DummyController->SetControlRotation(CameraData.Rotation);
-    //    if (TempCharacter)
-    //    {
-    //        DummyController->SetControlRotation(TempCharacter->GetActorRotation());
-    //    }
-    //}
-
-    //// 카메라 FOV 적용
-    //if (UCameraComponent* Camera = DummyPawn->FindComponentByClass<UCameraComponent>())
-    //{
-    //    Camera->SetFieldOfView(CameraData.FOV);
-    //}
+    // 카메라 FOV 적용
+    if (UCameraComponent* Camera = DummyPawn->FindComponentByClass<UCameraComponent>())
+    {
+        Camera->SetFieldOfView(CameraData.FOV);
+    }
 }
 
 // 디버그용 함수 (선택적으로 사용)
@@ -476,34 +465,21 @@ void ASSPlayerController::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
 
-    ACharacter* TempCharacter = Cast<ACharacter>(GetPawn());
-    if (TempCharacter && ClientDummyPawn)
-    {
-        ClientDummyPawn->SetActorLocation(TempCharacter->GetActorLocation());
-        ClientDummyPawn->SetActorRotation(TempCharacter->GetActorRotation());
+    // 더미 컨트롤러는 네트워크 동기화 안함
+    if (bIsDummyController) return;
 
-        // 컨트롤러 회전도 동기화
-        if (APlayerController* DummyController = Cast<APlayerController>(ClientDummyPawn->GetController()))
+    // 로컬 플레이어만 위치 정보를 서버로 전송
+    if (IsLocalController() && GetPawn())
+    {
+        TimeSinceLastUpdate += DeltaTime;
+        if (TimeSinceLastUpdate >= LocationUpdateInterval)
         {
-            DummyController->SetControlRotation(TempCharacter->GetActorRotation());
+            FVector PawnLocation = GetPawn()->GetActorLocation();
+            FRotator PawnRotation = GetPawn()->GetActorRotation();
+            ServerUpdatePlayerLocation(PawnLocation, PawnRotation);
+            TimeSinceLastUpdate = 0.0f;
         }
     }
-
-    // 더미 컨트롤러는 네트워크 동기화 안함
-    //if (bIsDummyController) return;
-
-    //// 로컬 플레이어만 위치 정보를 서버로 전송
-    //if (IsLocalController() && GetPawn())
-    //{
-    //    TimeSinceLastUpdate += DeltaTime;
-    //    if (TimeSinceLastUpdate >= LocationUpdateInterval)
-    //    {
-    //        FVector PawnLocation = GetPawn()->GetActorLocation();
-    //        FRotator PawnRotation = GetPawn()->GetActorRotation();
-    //        ServerUpdatePlayerLocation(PawnLocation, PawnRotation);
-    //        TimeSinceLastUpdate = 0.0f;
-    //    }
-    //}
 }
 
 void ASSPlayerController::ServerUpdatePlayerLocation_Implementation(FVector Location, FRotator Rotation)
