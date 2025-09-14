@@ -13,7 +13,6 @@
 #include "GameFramework/Character.h"
 #include "SSCameraViewProxy.h"
 
-
 void ASSPlayerController::BeginPlay()
 {
     Super::BeginPlay();
@@ -414,15 +413,34 @@ FCameraPredictionData ASSPlayerController::CorrectPredictionWithServerData(
 
 void ASSPlayerController::ApplyPredictedCamera(ASSDummySpectatorPawn* DummyPawn, const FCameraPredictionData& CameraData)
 {
+    // 오직 클라에서 서버 캐릭터 예측에만 쓰이니..
+    for (TActorIterator<ACharacter> It(GetWorld()); It; ++It)
+    {
+        ACharacter* TargetCharacter = *It;
+        if (!TargetCharacter || TargetCharacter->IsLocallyControlled())
+            continue;
+
+        // ① 피벗(더미 폰)을 타겟 위치로
+        const FVector Pivot = TargetCharacter->GetActorLocation(); // 필요시 머리 높이 보정
+        DummyPawn->SetActorLocation(Pivot);
+
+        // ② 컨트롤러 회전을 예측값으로 → 스프링암이 그 회전을 받아서 원궤도
+        if (APlayerController* DummyController = Cast<APlayerController>(DummyPawn->GetController()))
+        {
+            DummyController->SetControlRotation(CameraData.Rotation);
+        }
+        break;
+    }
+
     // 더미 폰 위치/회전 적용
-    DummyPawn->SetActorLocation(CameraData.Location);
-    DummyPawn->SetActorRotation(CameraData.Rotation);
+    /*DummyPawn->SetActorLocation(CameraData.Location);
+    DummyPawn->SetActorRotation(CameraData.Rotation);*/
 
     // 컨트롤러 회전도 동기화
-    if (APlayerController* DummyController = Cast<APlayerController>(DummyPawn->GetController()))
+    /*if (APlayerController* DummyController = Cast<APlayerController>(DummyPawn->GetController()))
     {
         DummyController->SetControlRotation(CameraData.Rotation);
-    }
+    }*/
 
     // 카메라 FOV 적용
     if (UCameraComponent* Camera = DummyPawn->FindComponentByClass<UCameraComponent>())

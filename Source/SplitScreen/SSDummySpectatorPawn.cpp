@@ -7,16 +7,24 @@
 #include "Kismet/KismetMathLibrary.h"
 #include "GameFramework/Pawn.h"
 #include "Components/SceneComponent.h"
+#include "GameFramework/SpringArmComponent.h"
 
 ASSDummySpectatorPawn::ASSDummySpectatorPawn()
 {
     PrimaryActorTick.bCanEverTick = true;
 
-    DummyCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("DummyCamera"));
-    RootComponent = DummyCamera;
+    CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
+    RootComponent = CameraBoom;
+    CameraBoom->TargetArmLength = 350.f;          // 타겟과 카메라 거리
+    CameraBoom->bUsePawnControlRotation = true;   // 컨트롤러 회전 = 붐 회전
+    CameraBoom->bDoCollisionTest = false;
 
-    bUseControllerRotationYaw = true;
-    bUseControllerRotationPitch = true;
+    DummyCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
+    DummyCamera->SetupAttachment(CameraBoom);
+    DummyCamera->bUsePawnControlRotation = false;
+
+    bUseControllerRotationYaw = false;
+    bUseControllerRotationPitch = false;
     bUseControllerRotationRoll = false;
 
     // 더미 폰을 안보이게 설정
@@ -28,7 +36,8 @@ void ASSDummySpectatorPawn::BeginPlay()
 {
     Super::BeginPlay();
 
-    UE_LOG(LogTemp, Warning, TEXT("SS Dummy Spectator Pawn Created - Camera Sync Mode: %s"),
+    UE_LOG(LogTemp, Warning, TEXT("[NetMode : %d] SS Dummy Spectator Pawn Created - Camera Sync Mode: %s"),
+        GetWorld()->GetNetMode(),
         bSyncDirectlyToCamera ? TEXT("Direct Camera Sync") : TEXT("Position + Offset"));
 }
 

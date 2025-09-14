@@ -18,6 +18,9 @@ class SPLITSCREEN_API ASSDummySpectatorPawn : public ASpectatorPawn
 public:
     ASSDummySpectatorPawn();
 
+    UPROPERTY()
+    TObjectPtr<class USpringArmComponent> CameraBoom;
+
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera")
     UCameraComponent* DummyCamera;
 
@@ -75,4 +78,5 @@ private:
     FRotator CalculateLookAtRotation(const FVector& FromPos, const FVector& ToPos);
     UCameraComponent* FindCameraInPawn(APawn* Pawn);
     void UpdateTargetCamera();
+
 };
