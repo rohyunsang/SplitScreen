@@ -5,6 +5,7 @@
 #include "Net/UnrealNetwork.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/SpringArmComponent.h"
 // #include "GameFramework/PlayerCameraManager.h"
 
 ASSCameraViewProxy::ASSCameraViewProxy()
@@ -13,7 +14,7 @@ ASSCameraViewProxy::ASSCameraViewProxy()
 
     bReplicates = true;
     bAlwaysRelevant = true;   // 어디서나 항상 관련
-    NetUpdateFrequency = 120.f;   // 필요 시 조정
+    SetNetUpdateFrequency(120.f);   // 필요 시 조정
     SetReplicateMovement(false); // 우리는 위치/회전을 액터 위치로 안 쓰고, RepCam만 복제
 
 #if WITH_EDITOR
@@ -83,6 +84,15 @@ void ASSCameraViewProxy::Tick(float DeltaSeconds)
         RepCam.Location = POV.Location;
         RepCam.Rotation = POV.Rotation;
         RepCam.FOV = POV.FOV;
+
+        // SpringArm 길이 추가 캡처
+        if (APawn* SourcePawn = PC->GetPawn())
+        {
+            if (USpringArmComponent* SpringArm = SourcePawn->FindComponentByClass<USpringArmComponent>())
+            {
+                RepCam.SpringArmLength = SpringArm->TargetArmLength;
+            }
+        }
 
         // 필요 시 네트 갱신(빈번한 호출은 트래픽 증가 → 빈도는 상황 맞춰 조절)
         // NetUpdateFrequency로 충분하면 생략해도 됨

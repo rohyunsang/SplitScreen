@@ -6,6 +6,12 @@
 #include "GameFramework/GameModeBase.h"
 #include "SSGameMode.generated.h"
 
+struct FRepCamInfo;
+class ASSDummySpectatorPawn;
+class ASSPlayerController;
+class ASSCameraViewProxy;
+class ACharacter;
+
 /**
  * 
  */
@@ -15,44 +21,75 @@ class SPLITSCREEN_API ASSGameMode : public AGameModeBase
 	GENERATED_BODY()
 	
 public:
-    ASSGameMode();
-    virtual void BeginPlay() override;
-    virtual void PostLogin(APlayerController* NewPlayer) override;
-    virtual void Logout(AController* Exiting) override;
+	ASSGameMode();
+	virtual void BeginPlay() override;
+	virtual void PostLogin(APlayerController* NewPlayer) override;
+	virtual void Logout(AController* Exiting) override;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Split Screen")
-    bool bAutoEnableSplitScreen = true;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Split Screen")
+	bool bAutoEnableSplitScreen = true;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Split Screen")
-    TSubclassOf<APawn> DummySpectatorPawnClass;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Split Screen")
+	TSubclassOf<APawn> DummySpectatorPawnClass;
 
 protected:
-    UFUNCTION(BlueprintCallable, Category = "Split Screen")
-    void SetupOnlineSplitScreen();
+	UFUNCTION(BlueprintCallable, Category = "Split Screen")
+	void SetupOnlineSplitScreen();
 
-    UFUNCTION(BlueprintCallable, Category = "Split Screen")
-    void UpdateSplitScreenLayout();
+	UFUNCTION(BlueprintCallable, Category = "Split Screen")
+	void UpdateSplitScreenLayout();
 
 private:
-    TArray<APlayerController*> ConnectedPlayers;
+	// 접속한 실제 네트워크 플레이어들(더미 제외)
+	UPROPERTY(Transient)
+	TArray<APlayerController*> ConnectedPlayers;
 
-    class ASSDummySpectatorPawn* DummySpectatorPawn;
-    class ASSPlayerController* DummyPlayerController;
+	// 서버 뷰포트의 2P 역할
+	UPROPERTY(Transient)
+	ASSDummySpectatorPawn* DummySpectatorPawn = nullptr;
 
-    void CreateDummyLocalPlayer();
-    void SyncDummyPlayerWithProxy();  // 이름 변경: 프록시 사용
-    void ApplyProxyCamera(class ASSDummySpectatorPawn* DummyPawn, const struct FRepCamInfo& CamData);
-    void SetupCameraProxies();
-    FTimerHandle SyncTimerHandle;
+	UPROPERTY(Transient)
+	ASSPlayerController* DummyPlayerController = nullptr;
+
+	// 카메라 동기화
+	void CreateDummyLocalPlayer();
+	void SyncDummyPlayerWithProxy();
+	void ApplyProxyCamera(ASSDummySpectatorPawn* DummyPawn, const FRepCamInfo& CamData);
+	void SetupCameraProxies();
+
+	FTimerHandle SyncTimerHandle;
 
 public:
-    UPROPERTY() // GC 보호
-        class ASSCameraViewProxy* ServerCamProxy = nullptr;
+	// 카메라 프록시 (GC 보호)
+	UPROPERTY(Transient)
+	ASSCameraViewProxy* ServerCamProxy = nullptr;
 
-    UPROPERTY() // GC 보호  
-        class ASSCameraViewProxy* ClientCamProxy = nullptr;
+	UPROPERTY(Transient)
+	ASSCameraViewProxy* ClientCamProxy = nullptr;
 
-    // 캐시된 프록시 참조 (성능 최적화)
 private:
-    TWeakObjectPtr<class ASSCameraViewProxy> CachedClientProxy;
+	// 캐시
+	TWeakObjectPtr<ASSCameraViewProxy>   CachedClientProxy;
+	TWeakObjectPtr<ACharacter>           CachedRemoteCharacter;
+
+	// **핵심: 원격/호스트 PC 캐시**
+	TWeakObjectPtr<APlayerController>    CachedRemotePC;
+	TWeakObjectPtr<APlayerController>    CachedHostPC;
+
+	// 튜닝 파라미터
+	UPROPERTY(EditAnywhere, Category = "Split Screen|Sync")
+	float ServerSnapDistance = 250.f;
+
+	UPROPERTY(EditAnywhere, Category = "Split Screen|Sync")
+	float ServerLocationInterpSpeed = 18.f;
+
+	UPROPERTY(EditAnywhere, Category = "Split Screen|Sync")
+	float ServerRotationInterpSpeed = 28.f;
+
+	UPROPERTY(EditAnywhere, Category = "Split Screen|Sync")
+	float PivotZOffset = 60.f;
+
+private:
+	// **원격 캐릭터 탐색 (가장 신뢰도 높은 경로부터)**
+	ACharacter* FindRemoteCharacter() const;
 };
