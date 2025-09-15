@@ -341,31 +341,33 @@ FCameraPredictionData ASSPlayerController::PredictCameraMovement()
 
     if (PredictionDelta > 0.0f && CameraHistory.Num() >= 2)
     {
-        // 속도 기반 예측
+        // 위치는 기존처럼 '속도(+가속도)' 기반 예측
         Predicted.Location = LatestData.Location + (LatestData.Velocity * PredictionDelta);
 
-        // 회전 예측 (각속도 적용)
-        FRotator PredictedRotation = LatestData.Rotation;
-        PredictedRotation.Pitch += LatestData.AngularVelocity.X * PredictionDelta;
-        PredictedRotation.Yaw += LatestData.AngularVelocity.Y * PredictionDelta;
-        PredictedRotation.Roll += LatestData.AngularVelocity.Z * PredictionDelta;
-        Predicted.Rotation = PredictedRotation.GetNormalized();
-
-        // 가속도 기반 보정 (2차 예측)
         if (CameraHistory.Num() >= 3)
         {
             const FCameraPredictionData& PrevData = CameraHistory[CameraHistory.Num() - 2];
-            FVector Acceleration = (LatestData.Velocity - PrevData.Velocity) /
-                FMath::Max(LatestData.Timestamp - PrevData.Timestamp, 0.001f);
-
-            // 가속도를 고려한 위치 보정
-            Predicted.Location += 0.5f * Acceleration * PredictionDelta * PredictionDelta;
+            const float Den = FMath::Max(LatestData.Timestamp - PrevData.Timestamp, 0.001f);
+            const FVector Accel = (LatestData.Velocity - PrevData.Velocity) / Den;
+            Predicted.Location += 0.5f * Accel * PredictionDelta * PredictionDelta;
         }
+
+        // [변경] 회전 예측 제거: 각속도 적용 안 함
+        //       → 항상 최신 서버 스냅샷의 회전을 그대로 사용
+        Predicted.Rotation = LatestData.Rotation;
+    }
+    else
+    {
+        // Δt가 0이거나 히스토리가 부족하면 그대로
+        Predicted.Location = LatestData.Location;
+        Predicted.Rotation = LatestData.Rotation; // [변경] 회전 예측 없음
     }
 
+    Predicted.FOV = LatestData.FOV;
     PredictedCamera = Predicted;
     return Predicted;
 }
+
 
 FCameraPredictionData ASSPlayerController::CorrectPredictionWithServerData(
     const FCameraPredictionData& Prediction,
