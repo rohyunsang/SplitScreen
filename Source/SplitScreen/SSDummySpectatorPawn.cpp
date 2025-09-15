@@ -19,6 +19,10 @@ ASSDummySpectatorPawn::ASSDummySpectatorPawn()
     CameraBoom->bUsePawnControlRotation = true;   // 컨트롤러 회전 = 붐 회전
     CameraBoom->bDoCollisionTest = false;
 
+    // 더미는 절대 래그 쓰지 말 것 (클라에서 이미 래그가 반영된 최종 뷰를 받음)
+    CameraBoom->bEnableCameraLag = false;
+    CameraBoom->bEnableCameraRotationLag = false;
+
     DummyCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
     DummyCamera->SetupAttachment(CameraBoom);
     DummyCamera->bUsePawnControlRotation = false;
