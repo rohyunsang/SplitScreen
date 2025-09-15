@@ -122,7 +122,7 @@ void ASSPlayerController::CreateClientDummyPawn()
         return;
     }
 
-    FVector DummySpawnLocation = FVector(0, 0, 200);
+    FVector DummySpawnLocation = FVector(0, 0, 0);
     FRotator DummySpawnRotation = FRotator::ZeroRotator;
 
     ClientDummyPawn = GetWorld()->SpawnActor<ASSDummySpectatorPawn>(
@@ -433,16 +433,6 @@ void ASSPlayerController::ApplyPredictedCamera(ASSDummySpectatorPawn* DummyPawn,
         }
         break;
     }
-
-    // 더미 폰 위치/회전 적용
-    /*DummyPawn->SetActorLocation(CameraData.Location);
-    DummyPawn->SetActorRotation(CameraData.Rotation);*/
-
-    // 컨트롤러 회전도 동기화
-    /*if (APlayerController* DummyController = Cast<APlayerController>(DummyPawn->GetController()))
-    {
-        DummyController->SetControlRotation(CameraData.Rotation);
-    }*/
 
     // 카메라 FOV 적용
     if (UCameraComponent* Camera = DummyPawn->FindComponentByClass<UCameraComponent>())

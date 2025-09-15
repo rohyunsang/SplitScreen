@@ -12,6 +12,24 @@ class ASSPlayerController;
 class ASSCameraViewProxy;
 class ACharacter;
 
+// 카메라 예측을 위한 데이터 구조체
+USTRUCT(BlueprintType)
+struct FCameraPredictionDataGM
+{
+	GENERATED_BODY()
+
+	UPROPERTY() FVector  Location = FVector::ZeroVector;
+	UPROPERTY() FRotator Rotation = FRotator::ZeroRotator;
+	UPROPERTY() float    FOV = 90.0f;
+	float    SpringArmLength = 0.f;
+
+	// 예측용
+	UPROPERTY() FVector  Velocity = FVector::ZeroVector;
+	UPROPERTY() FVector  AngularVelocity = FVector::ZeroVector;
+	UPROPERTY() float    Timestamp = 0.0f;
+};
+
+
 /**
  * 
  */
@@ -23,6 +41,7 @@ class SPLITSCREEN_API ASSGameMode : public AGameModeBase
 public:
 	ASSGameMode();
 	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaTime) override;
 	virtual void PostLogin(APlayerController* NewPlayer) override;
 	virtual void Logout(AController* Exiting) override;
 
@@ -44,23 +63,15 @@ private:
 	UPROPERTY(Transient)
 	TArray<APlayerController*> ConnectedPlayers;
 
-	// 서버 뷰포트의 2P 역할
+	// 서버 2P 화면용 더미
 	UPROPERTY(Transient)
 	ASSDummySpectatorPawn* DummySpectatorPawn = nullptr;
 
 	UPROPERTY(Transient)
 	ASSPlayerController* DummyPlayerController = nullptr;
 
-	// 카메라 동기화
-	void CreateDummyLocalPlayer();
-	void SyncDummyPlayerWithProxy();
-	void ApplyProxyCamera(ASSDummySpectatorPawn* DummyPawn, const FRepCamInfo& CamData);
-	void SetupCameraProxies();
-
-	FTimerHandle SyncTimerHandle;
-
-public:
 	// 카메라 프록시 (GC 보호)
+public:
 	UPROPERTY(Transient)
 	ASSCameraViewProxy* ServerCamProxy = nullptr;
 
@@ -68,13 +79,25 @@ public:
 	ASSCameraViewProxy* ClientCamProxy = nullptr;
 
 private:
-	// 캐시
-	TWeakObjectPtr<ASSCameraViewProxy>   CachedClientProxy;
-	TWeakObjectPtr<ACharacter>           CachedRemoteCharacter;
+	// 동기화/프록시/탐색
+	void CreateDummyLocalPlayer();
+	void SetupCameraProxies();
+	void SyncDummyPlayerWithProxy();
+	ACharacter* FindRemoteCharacter() const;
 
-	// **핵심: 원격/호스트 PC 캐시**
-	TWeakObjectPtr<APlayerController>    CachedRemotePC;
-	TWeakObjectPtr<APlayerController>    CachedHostPC;
+	// 적용 (예측 버전)
+	void ApplyPredictedCamera(ASSDummySpectatorPawn* DummyPawn, const FCameraPredictionDataGM& CameraData);
+
+	// 호환용: 헤더에 있던 선언을 실제 구현으로 채워둠(예측 파이프라인 래퍼)
+	void ApplyProxyCamera(ASSDummySpectatorPawn* DummyPawn, const FRepCamInfo& CamData);
+
+	FTimerHandle SyncTimerHandle;
+
+	// 캐시
+	TWeakObjectPtr<ASSCameraViewProxy> CachedClientProxy;
+	TWeakObjectPtr<ACharacter>         CachedRemoteCharacter;
+	TWeakObjectPtr<APlayerController>  CachedRemotePC;
+	TWeakObjectPtr<APlayerController>  CachedHostPC;
 
 	// 튜닝 파라미터
 	UPROPERTY(EditAnywhere, Category = "Split Screen|Sync")
@@ -89,7 +112,33 @@ private:
 	UPROPERTY(EditAnywhere, Category = "Split Screen|Sync")
 	float PivotZOffset = 60.f;
 
-private:
-	// **원격 캐릭터 탐색 (가장 신뢰도 높은 경로부터)**
-	ACharacter* FindRemoteCharacter() const;
+	// ───────── 예측용 상태/튜닝 ─────────
+	// 히스토리
+	UPROPERTY(Transient)
+	TArray<FCameraPredictionDataGM> CameraHistory;
+
+	// 마지막으로 수신한 클라 카메라(원천)
+	UPROPERTY(Transient)
+	FCameraPredictionDataGM LastClientCamera;
+
+	// 최신 예측 결과
+	UPROPERTY(Transient)
+	FCameraPredictionDataGM PredictedCamera;
+
+	// 예측 튜닝
+	UPROPERTY(EditAnywhere, Category = "Split Screen|Prediction")
+	int32 MaxHistorySize = 10;
+
+	UPROPERTY(EditAnywhere, Category = "Split Screen|Prediction")
+	float MaxPredictionTime = 0.06f;   // 초 (네트 지연 보정용)
+
+	UPROPERTY(EditAnywhere, Category = "Split Screen|Prediction")
+	float CorrectionSpeed = 20.f;      // 보정 보간 속도
+
+	// 예측 로직
+	void UpdateCameraHistory(const FRepCamInfo& ClientCam);
+	FCameraPredictionDataGM PredictCameraMovement();
+	FCameraPredictionDataGM CorrectPredictionWithServerData(const FCameraPredictionDataGM& Prediction,
+		const FRepCamInfo& ClientCam);
+	
 };
