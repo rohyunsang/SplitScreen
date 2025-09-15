@@ -82,10 +82,6 @@ protected:
     // 입력 설정
     virtual void SetupInputComponent() override;
 
-    /** 서버에서 '이 컨트롤러의 카메라'를 복제하는 본인 소유 프록시 */
-    // (월드가 소유하는 액터라 굳이 강한 참조가 필요하지 않아서 Weak로 둠)
-    TWeakObjectPtr<ASSCameraViewProxy> OwnedCamProxy;
-
 private:
     // 네트워크 업데이트 관련
     float LocationUpdateInterval = 0.0167f; // 60fps
