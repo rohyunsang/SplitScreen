@@ -145,4 +145,24 @@ private:
     // 디버그용 함수
     UFUNCTION(BlueprintCallable, Category = "Debug")
     void DebugCameraPrediction();
+
+
+/// 클라 -> 서버 회전 동기화 
+public:
+    // 컨트롤 회전 복제를 위한 변수
+    UPROPERTY(ReplicatedUsing = OnRep_ReplicatedControlRotation)
+    FRotator ReplicatedControlRotation;
+
+    UFUNCTION()
+    void OnRep_ReplicatedControlRotation();
+
+    // 서버로 회전 전송
+    UFUNCTION(Server, Unreliable, WithValidation)
+    void ServerUpdateControlRotation(FRotator NewRotation);
+
+    float ControlRotationUpdateInterval = 0.033f; // 30Hz
+    float TimeSinceLastRotationUpdate = 0.0f;
+
+    UFUNCTION()
+    FRotator GetReplicatedControlRotation() const { return ReplicatedControlRotation; }
 };

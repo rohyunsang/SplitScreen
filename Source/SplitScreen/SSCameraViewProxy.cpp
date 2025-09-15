@@ -6,6 +6,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerController.h"
 #include "Camera/CameraComponent.h"
+#include "SSPlayerController.h"
 // #include "GameFramework/PlayerCameraManager.h"
 
 ASSCameraViewProxy::ASSCameraViewProxy()
@@ -14,7 +15,7 @@ ASSCameraViewProxy::ASSCameraViewProxy()
 
     bReplicates = true;
     bAlwaysRelevant = true;   // 어디서나 항상 관련
-    NetUpdateFrequency = 120.f;   // 필요 시 조정
+    SetNetUpdateFrequency(120.f);   // 필요 시 조정
     SetReplicateMovement(false); // 우리는 위치/회전을 액터 위치로 안 쓰고, RepCam만 복제
 
 #if WITH_EDITOR
@@ -56,65 +57,63 @@ void ASSCameraViewProxy::SetSourceFromPlayerIndex(int32 PlayerIndex /*=0*/)
 
 void ASSCameraViewProxy::Tick(float DeltaSeconds)
 {
-    Super::Tick(DeltaSeconds);
-
-    // 서버에서만 카메라 정보를 채워 복제
-    if (!HasAuthority())
-    {
-        return;
-    }
+    if (!HasAuthority()) return;
 
     APlayerController* PC = SourcePC.Get();
-
-    // 소스가 비었으면 0번 플레이어로 자동 설정 (필요시 유지)
-    if (!PC)
-    {
-        if (UWorld* World = GetWorld())
-        {
-            PC = UGameplayStatics::GetPlayerController(World, 0);
-            SourcePC = PC;
-        }
-    }
-
     if (!PC) return;
 
-    // 1) 우선순위 1: 로컬 PC에만 존재/갱신되는 PlayerCameraManager
-    if (PC->PlayerCameraManager)
+    if (APawn* Pawn = PC->GetPawn())
     {
-        const FMinimalViewInfo POV = PC->PlayerCameraManager->GetCameraCacheView();
-        RepCam.Location = POV.Location;
-        RepCam.Rotation = POV.Rotation;
-        RepCam.FOV = POV.FOV;
-        return;
-    }
+        FRepCamInfo NewCamInfo;
+        NewCamInfo.Location = Pawn->GetPawnViewLocation();
+        NewCamInfo.FOV = 90.f;
+        NewCamInfo.Timestamp = GetWorld()->GetTimeSeconds();
 
-    // 2) 우선순위 2: 원격 PC(서버에서 Authority지만 Local 아님) → 컨트롤러 회전 + Pawn 뷰 기반
-    APawn* Pawn = PC->GetPawn();
-    if (Pawn)
-    {
-        // 회전: 클라에서 ServerUpdateRotation으로 올라온 컨트롤러 회전이 가장 신뢰도 높음
-        const FRotator ControlRot = PC->GetControlRotation();
-
-        // 위치/FOV: Pawn의 카메라 컴포넌트가 있으면 사용, 없으면 Pawn 뷰/기본 FOV
-        FVector ViewLoc = Pawn->GetPawnViewLocation();
-        float   FOV = 90.f;
-
+        // 카메라 컴포넌트가 있으면 더 정확한 정보 사용
         if (UCameraComponent* Cam = Pawn->FindComponentByClass<UCameraComponent>())
         {
-            // 위치는 카메라 컴포넌트 위치가 더 자연스러움
-            ViewLoc = Cam->GetComponentLocation();
-            // 회전은 컨트롤러 회전을 유지(카메라 컴포넌트 회전은 서버에서 갱신 안 되어 있을 수 있음)
-            FOV = Cam->FieldOfView;
+            NewCamInfo.Location = Cam->GetComponentLocation();
+            NewCamInfo.FOV = Cam->FieldOfView;
         }
 
-        RepCam.Location = ViewLoc;
-        RepCam.Rotation = ControlRot;
-        RepCam.FOV = FOV;
-        return;
-    }
+        // 회전 정보 수집 - 로컬/원격 구분
+        if (PC->IsLocalController())
+        {
+            // 로컬(서버) 플레이어는 직접 ControlRotation 사용
+            NewCamInfo.Rotation = PC->GetControlRotation();
+        }
+        else
+        {
+            // 원격 플레이어는 복제된 회전값 사용
+            if (ASSPlayerController* SSPC = Cast<ASSPlayerController>(PC))
+            {
+                NewCamInfo.Rotation = SSPC->GetReplicatedControlRotation();  //  getter 사용
 
-    // 3) Pawn도 없으면 컨트롤러만으로 대충 채움(최후의 수단)
-    RepCam.Location = GetActorLocation();
-    RepCam.Rotation = PC->GetControlRotation();
-    RepCam.FOV = 90.f;
+                // 복제된 회전값이 아직 없으면 Pawn의 BaseAimRotation 사용 (폴백)
+                if (NewCamInfo.Rotation.IsNearlyZero())
+                {
+                    NewCamInfo.Rotation = Pawn->GetBaseAimRotation();
+                    UE_LOG(LogTemp, Warning, TEXT("Using BaseAimRotation as fallback"));
+                }
+            }
+            else
+            {
+                // SSPlayerController가 아닌 경우 기본값 사용
+                NewCamInfo.Rotation = PC->GetControlRotation();
+            }
+        }
+
+        // 변경되었을 때만 업데이트
+        if (!RepCam.Rotation.Equals(NewCamInfo.Rotation, 1.0f) ||
+            !RepCam.Location.Equals(NewCamInfo.Location, 1.0f))
+        {
+            RepCam = NewCamInfo;
+
+            // 디버그 로그
+            UE_LOG(LogTemp, VeryVerbose, TEXT("CamProxy updated - PC: %s, Local: %s, Rotation: %s"),
+                *PC->GetName(),
+                PC->IsLocalController() ? TEXT("Yes") : TEXT("No"),
+                *NewCamInfo.Rotation.ToString());
+        }
+    }
 }
