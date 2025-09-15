@@ -12,6 +12,7 @@
 #include "TimerManager.h" // GetWorldTimerManager() 사용을 위해
 #include "SSCameraViewProxy.h"
 #include "Kismet/GameplayStatics.h"
+#include "GameFramework/SpringArmComponent.h"
 
 ASSGameMode::ASSGameMode()
 {
@@ -111,7 +112,7 @@ void ASSGameMode::SetupOnlineSplitScreen()
         GetWorldTimerManager().SetTimer(
             SyncTimerHandle,
             [this]() { SyncDummyPlayerWithProxy(); },
-            0.0083f,
+            0.0167f,
             true
         );
         UE_LOG(LogTemp, Warning, TEXT("SS Split screen setup completed successfully"));
@@ -203,7 +204,7 @@ void ASSGameMode::CreateDummyLocalPlayer()
     }
 
     // 더미 스펙테이터 폰 생성
-    FVector SpawnLocation = FVector(0, 0, 200);
+    FVector SpawnLocation = FVector(0, 0, 0);
     FRotator SpawnRotation = FRotator::ZeroRotator;
 
     DummySpectatorPawn = GetWorld()->SpawnActor<ASSDummySpectatorPawn>(
@@ -266,39 +267,51 @@ void ASSGameMode::ApplyProxyCamera(ASSDummySpectatorPawn* DummyPawn, const FRepC
 {
     if (!DummyPawn) return;
 
-    // 디버깅: 받은 카메라 데이터 로그
-    UE_LOG(LogTemp, Log, TEXT("SS ApplyProxyCamera - Rot: %s, Loc: %s"),
-        *CamData.Rotation.ToString(), *CamData.Location.ToString());
-
-    // SpringArm 사용 시 컨트롤러 회전이 더 중요
-    if (DummyPlayerController)
+    // 클라이언트 캐릭터 위치 찾기
+    APlayerController* ClientPC = nullptr;
+    for (APlayerController* PC : ConnectedPlayers)
     {
-        // 현재 컨트롤러 회전
-        FRotator CurrentControlRotation = DummyPlayerController->GetControlRotation();
-
-        // 거리 체크 - 너무 멀면 즉시 적용
-        float Distance = FVector::Dist(DummyPawn->GetActorLocation(), CamData.Location);
-
-        if (Distance > 500.0f)
+        if (PC && !PC->IsLocalController() && PC != DummyPlayerController)
         {
-            // 즉시 적용
-            DummyPlayerController->SetControlRotation(CamData.Rotation);
-            DummyPawn->SetActorLocation(CamData.Location);
-            UE_LOG(LogTemp, Warning, TEXT("SS Large distance detected: %.2f, immediate correction"), Distance);
+            ClientPC = PC;
+            break;
+        }
+    }
+
+    if (ClientPC && ClientPC->GetPawn())
+    {
+        // 타겟 캐릭터 위치
+        FVector TargetCharacterLocation = ClientPC->GetPawn()->GetActorLocation();
+        FVector CurrentLocation = DummyPawn->GetActorLocation();
+
+        // 보간 설정
+        float LocationInterpSpeed = 15.0f;  // 위치 보간 속도 (낮춤)
+        float RotationInterpSpeed = 25.0f;  // 회전 보간 속도 (낮춤)
+
+        // 거리 체크 - 너무 멀면 즉시 이동
+        float Distance = FVector::Dist(CurrentLocation, TargetCharacterLocation);
+        if (Distance > 300.0f) // 3미터 이상 차이나면 즉시 이동
+        {
+            DummyPawn->SetActorLocation(TargetCharacterLocation);
+            if (DummyPlayerController)
+            {
+                DummyPlayerController->SetControlRotation(CamData.Rotation);
+            }
+            UE_LOG(LogTemp, Warning, TEXT("SS Large character distance detected: %.2f, immediate correction"), Distance);
         }
         else
         {
             // 부드러운 보간
-            float InterpSpeed = 35.0f;
-            float RotationInterpSpeed = 45.0f;
-            float DeltaTime = GetWorld()->GetDeltaSeconds();
-
-            FVector CurrentLocation = DummyPawn->GetActorLocation();
-            FVector NewLocation = FMath::VInterpTo(CurrentLocation, CamData.Location, DeltaTime, InterpSpeed);
-            FRotator NewControlRotation = FMath::RInterpTo(CurrentControlRotation, CamData.Rotation, DeltaTime, RotationInterpSpeed);
-
-            DummyPlayerController->SetControlRotation(NewControlRotation);
+            FVector NewLocation = FMath::VInterpTo(CurrentLocation, TargetCharacterLocation, GetWorld()->GetDeltaSeconds(), LocationInterpSpeed);
             DummyPawn->SetActorLocation(NewLocation);
+
+            // 컨트롤러 회전 보간
+            if (DummyPlayerController)
+            {
+                FRotator CurrentControlRotation = DummyPlayerController->GetControlRotation();
+                FRotator NewControlRotation = FMath::RInterpTo(CurrentControlRotation, CamData.Rotation, GetWorld()->GetDeltaSeconds(), RotationInterpSpeed);
+                DummyPlayerController->SetControlRotation(NewControlRotation);
+            }
         }
     }
 

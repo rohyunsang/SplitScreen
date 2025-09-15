@@ -12,12 +12,16 @@
 ASSDummySpectatorPawn::ASSDummySpectatorPawn()
 {
     PrimaryActorTick.bCanEverTick = true;
+    SetReplicateMovement(false);
 
     CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
     RootComponent = CameraBoom;
     CameraBoom->TargetArmLength = 400.f;          // 타겟과 카메라 거리
     CameraBoom->bUsePawnControlRotation = true;   // 컨트롤러 회전 = 붐 회전
     CameraBoom->bDoCollisionTest = false;
+    CameraBoom->bInheritPitch = true;           // 피치 상속
+    CameraBoom->bInheritYaw = true;             // 요 상속
+    CameraBoom->bInheritRoll = false;           // 롤은 상속 안함
 
     DummyCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
     DummyCamera->SetupAttachment(CameraBoom);

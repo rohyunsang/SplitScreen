@@ -19,6 +19,9 @@ struct FRepCamInfo
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float FOV = 90.f;
+
+    UPROPERTY()
+    float SpringArmLength = 400.0f;  // Ãß°¡
 };
 
 UCLASS()
