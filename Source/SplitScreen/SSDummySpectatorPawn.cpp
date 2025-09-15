@@ -15,7 +15,7 @@ ASSDummySpectatorPawn::ASSDummySpectatorPawn()
 
     CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
     RootComponent = CameraBoom;
-    CameraBoom->TargetArmLength = 350.f;          // 타겟과 카메라 거리
+    CameraBoom->TargetArmLength = 400.f;          // 타겟과 카메라 거리
     CameraBoom->bUsePawnControlRotation = true;   // 컨트롤러 회전 = 붐 회전
     CameraBoom->bDoCollisionTest = false;
 

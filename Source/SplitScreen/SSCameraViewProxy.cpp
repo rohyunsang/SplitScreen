@@ -5,6 +5,7 @@
 #include "Net/UnrealNetwork.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerController.h"
+#include "Camera/CameraComponent.h"
 // #include "GameFramework/PlayerCameraManager.h"
 
 ASSCameraViewProxy::ASSCameraViewProxy()
@@ -65,7 +66,7 @@ void ASSCameraViewProxy::Tick(float DeltaSeconds)
 
     APlayerController* PC = SourcePC.Get();
 
-    // 소스가 비었으면 0번 플레이어(리슨서버 로컬)로 자동 설정 시도
+    // 소스가 비었으면 0번 플레이어로 자동 설정 (필요시 유지)
     if (!PC)
     {
         if (UWorld* World = GetWorld())
@@ -75,17 +76,45 @@ void ASSCameraViewProxy::Tick(float DeltaSeconds)
         }
     }
 
-    if (PC && PC->PlayerCameraManager)
-    {
-        // 서버가 실제 보고 있는 화면 시점(FMinimalViewInfo)을 가져온다.
-        const FMinimalViewInfo POV = PC->PlayerCameraManager->GetCameraCacheView();
+    if (!PC) return;
 
+    // 1) 우선순위 1: 로컬 PC에만 존재/갱신되는 PlayerCameraManager
+    if (PC->PlayerCameraManager)
+    {
+        const FMinimalViewInfo POV = PC->PlayerCameraManager->GetCameraCacheView();
         RepCam.Location = POV.Location;
         RepCam.Rotation = POV.Rotation;
         RepCam.FOV = POV.FOV;
-
-        // 필요 시 네트 갱신(빈번한 호출은 트래픽 증가 → 빈도는 상황 맞춰 조절)
-        // NetUpdateFrequency로 충분하면 생략해도 됨
-        // ForceNetUpdate();
+        return;
     }
+
+    // 2) 우선순위 2: 원격 PC(서버에서 Authority지만 Local 아님) → 컨트롤러 회전 + Pawn 뷰 기반
+    APawn* Pawn = PC->GetPawn();
+    if (Pawn)
+    {
+        // 회전: 클라에서 ServerUpdateRotation으로 올라온 컨트롤러 회전이 가장 신뢰도 높음
+        const FRotator ControlRot = PC->GetControlRotation();
+
+        // 위치/FOV: Pawn의 카메라 컴포넌트가 있으면 사용, 없으면 Pawn 뷰/기본 FOV
+        FVector ViewLoc = Pawn->GetPawnViewLocation();
+        float   FOV = 90.f;
+
+        if (UCameraComponent* Cam = Pawn->FindComponentByClass<UCameraComponent>())
+        {
+            // 위치는 카메라 컴포넌트 위치가 더 자연스러움
+            ViewLoc = Cam->GetComponentLocation();
+            // 회전은 컨트롤러 회전을 유지(카메라 컴포넌트 회전은 서버에서 갱신 안 되어 있을 수 있음)
+            FOV = Cam->FieldOfView;
+        }
+
+        RepCam.Location = ViewLoc;
+        RepCam.Rotation = ControlRot;
+        RepCam.FOV = FOV;
+        return;
+    }
+
+    // 3) Pawn도 없으면 컨트롤러만으로 대충 채움(최후의 수단)
+    RepCam.Location = GetActorLocation();
+    RepCam.Rotation = PC->GetControlRotation();
+    RepCam.FOV = 90.f;
 }

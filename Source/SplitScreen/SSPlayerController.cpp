@@ -17,43 +17,45 @@ void ASSPlayerController::BeginPlay()
 {
     Super::BeginPlay();
 
-    if (!bIsDummyController)
+    // (A) 서버에서는 각 PC가 자신의 카메라 프록시를 직접 생성/등록
+    if (HasAuthority() && !OwnedCamProxy.IsValid())
     {
-        UE_LOG(LogTemp, Warning, TEXT("SS Player Controller Started - IsLocalController: %s"),
-            IsLocalController() ? TEXT("true") : TEXT("false"));
+        FActorSpawnParameters Params;
+        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-        // 클라이언트에서 로컬 컨트롤러인 경우 스플릿 스크린 설정
-        if (GetWorld()->GetNetMode() == NM_Client && IsLocalController())
+        if (UWorld* World = GetWorld())
         {
-            UE_LOG(LogTemp, Warning, TEXT("SS Client detected - Setting up split screen"));
-
-            // 이미 설정이 완료되었는지 체크
-            if (bClientSplitScreenSetupComplete)
+            if (ASSCameraViewProxy* NewProxy =
+                World->SpawnActor<ASSCameraViewProxy>(ASSCameraViewProxy::StaticClass(), FTransform::Identity, Params))
             {
-                UE_LOG(LogTemp, Warning, TEXT("SS Client split screen already setup, skipping"));
-                return;
+                NewProxy->SetSourcePC(this);   // 이 컨트롤러 시점 복제
+                OwnedCamProxy = NewProxy;
             }
+        }
+    }
 
-            // GameInstance에서 스플릿 스크린 활성화
-            if (USSGameInstance* SSGI = Cast<USSGameInstance>(GetGameInstance()))
-            {
-                SSGI->EnableSplitScreen();
-            }
+    // (B) 로컬에서 렌더링하는 쪽만 스플릿/더미 세팅
+    if (!bIsDummyController && IsLocalController())
+    {
+        // (권장) 스탠드얼론에서는 스플릿 비활성화
+        if (GetWorld()->GetNetMode() == NM_Standalone)
+        {
+            return;
+        }
 
-            // 더미 로컬 플레이어 생성 (한 번만)
-            FTimerHandle ClientSetupHandle;
-            GetWorldTimerManager().SetTimer(
-                ClientSetupHandle,
-                [this]()
+        if (USSGameInstance* SSGI = Cast<USSGameInstance>(GetGameInstance()))
+        {
+            SSGI->EnableSplitScreen();
+        }
+
+        if (!bClientSplitScreenSetupComplete)
+        {
+            FTimerHandle H;
+            GetWorldTimerManager().SetTimer(H, [this]()
                 {
-                    if (!bClientSplitScreenSetupComplete) // 다시 한번 체크
-                    {
+                    if (!bClientSplitScreenSetupComplete)
                         SetupClientSplitScreen();
-                    }
-                },
-                2.0f, // 2초 지연
-                false
-            );
+                }, 0.5f, false);
         }
     }
 }
@@ -251,22 +253,41 @@ void ASSPlayerController::SyncClientDummyWithRemotePlayer(ASSDummySpectatorPawn*
 {
     if (!DummyPawn) return;
 
-    // 1) 프록시에서 최신 서버 카메라 데이터 가져오기
+    // (A) '상대' 프록시를 찾아 캐시
     ASSCameraViewProxy* Proxy = CachedProxy.Get();
-    if (!Proxy)
+    const bool bServer = HasAuthority();
+
+    auto IsOtherProxy = [&](ASSCameraViewProxy* P) -> bool
+        {
+            if (!P) return false;
+            // 서버: 내가 소유한 프록시가 따로 있음. 그게 아니면 상대 프록시
+            if (bServer && OwnedCamProxy.IsValid())
+            {
+                return (P != OwnedCamProxy.Get());
+            }
+            // 클라: 보통 자신 소유 프록시가 없음 → 첫 번째 프록시 = 서버/다른 플레이어 것
+            return true;
+        };
+
+    if (!Proxy || !IsOtherProxy(Proxy))
     {
+        Proxy = nullptr;
         for (TActorIterator<ASSCameraViewProxy> It(GetWorld()); It; ++It)
         {
-            Proxy = *It;
-            break;
+            ASSCameraViewProxy* Candidate = *It;
+            if (IsOtherProxy(Candidate))
+            {
+                Proxy = Candidate;
+                break;
+            }
         }
         if (!Proxy) return;
         CachedProxy = Proxy;
     }
 
+    // (B) 서버에서 복제된 시점 읽기
     const FRepCamInfo& ServerCam = Proxy->GetReplicatedCamera();
 
-    // 2) 새로운 서버 데이터가 도착했는지 확인
     bool bNewServerData = false;
     if (!LastServerCamera.Location.Equals(ServerCam.Location, 1.0f) ||
         !LastServerCamera.Rotation.Equals(ServerCam.Rotation, 1.0f))
@@ -275,16 +296,13 @@ void ASSPlayerController::SyncClientDummyWithRemotePlayer(ASSDummySpectatorPawn*
         UpdateCameraHistory(ServerCam);
     }
 
-    // 3) 카메라 위치 예측 수행
+    // (C) 위치 예측(회전 예측 없음)
     FCameraPredictionData PredictedState = PredictCameraMovement();
 
-    // 4) 서버 데이터로 예측 보정 (새 데이터가 있을 때만)
-    if (bNewServerData)
-    {
-        PredictedState = CorrectPredictionWithServerData(PredictedState, ServerCam);
-    }
+    // (D) 항상 서버 기준으로 보정(회전은 반드시 서버에 수렴)
+    PredictedState = CorrectPredictionWithServerData(PredictedState, ServerCam);
 
-    // 5) 더미 폰에 예측된 카메라 적용
+    // (E) 더미 폰에 적용
     ApplyPredictedCamera(DummyPawn, PredictedState);
 }
 
@@ -415,14 +433,14 @@ FCameraPredictionData ASSPlayerController::CorrectPredictionWithServerData(
 
 void ASSPlayerController::ApplyPredictedCamera(ASSDummySpectatorPawn* DummyPawn, const FCameraPredictionData& CameraData)
 {
-    // 오직 클라에서 서버 캐릭터 예측에만 쓰이니..
+    
     for (TActorIterator<ACharacter> It(GetWorld()); It; ++It)
     {
         ACharacter* TargetCharacter = *It;
         if (!TargetCharacter || TargetCharacter->IsLocallyControlled())
             continue;
 
-        // ① 피벗(더미 폰)을 타겟 위치로
+        //  피벗(더미 폰)을 타겟 위치로
         const FVector Pivot = TargetCharacter->GetActorLocation(); // 필요시 머리 높이 보정
         DummyPawn->SetActorLocation(Pivot);
 
@@ -504,6 +522,7 @@ void ASSPlayerController::Tick(float DeltaTime)
 
 void ASSPlayerController::ServerUpdatePlayerLocation_Implementation(FVector Location, FRotator Rotation)
 {
+    /*
     // 서버에서 다른 클라이언트들에게 위치 정보 전달
     ASSGameMode* SSGameMode = Cast<ASSGameMode>(GetWorld()->GetAuthGameMode());
     if (SSGameMode)
@@ -518,6 +537,7 @@ void ASSPlayerController::ServerUpdatePlayerLocation_Implementation(FVector Loca
             }
         }
     }
+    */
 }
 
 bool ASSPlayerController::ServerUpdatePlayerLocation_Validate(FVector Location, FRotator Rotation)
@@ -531,25 +551,3 @@ void ASSPlayerController::ClientReceiveRemotePlayerLocation_Implementation(FVect
     // UE_LOG(LogTemp, Log, TEXT("SS Received remote player location: %s"), *Location.ToString());
 }
 
-/*
-// 추가: PlayerController 정리 함수
-void ASSPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
-{
-    // 타이머 정리
-    if (GetWorldTimerManager().IsTimerActive(ClientSyncTimerHandle))
-    {
-        GetWorldTimerManager().ClearTimer(ClientSyncTimerHandle);
-        UE_LOG(LogTemp, Log, TEXT("SS Cleared sync timer for controller: %s"), *GetName());
-    }
-
-    // 더미 컨트롤러인 경우 추가 정리
-    if (bIsDummyController)
-    {
-        UE_LOG(LogTemp, Log, TEXT("SS Dummy controller %s ending play"), *GetName());
-    }
-
-    Super::EndPlay(EndPlayReason);
-}
-
-
-*/
