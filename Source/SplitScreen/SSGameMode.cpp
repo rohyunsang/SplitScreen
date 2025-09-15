@@ -1,6 +1,5 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
-
 #include "SSGameMode.h"
 #include "SSGameInstance.h"
 #include "SSDummySpectatorPawn.h"
@@ -13,7 +12,6 @@
 #include "TimerManager.h" // GetWorldTimerManager() 사용을 위해
 #include "SSCameraViewProxy.h"
 #include "Kismet/GameplayStatics.h"
-
 
 ASSGameMode::ASSGameMode()
 {
@@ -44,6 +42,7 @@ void ASSGameMode::BeginPlay()
         }
     }
 }
+
 void ASSGameMode::PostLogin(APlayerController* NewPlayer)
 {
     Super::PostLogin(NewPlayer);
@@ -103,12 +102,15 @@ void ASSGameMode::SetupOnlineSplitScreen()
     CreateDummyLocalPlayer();
     UpdateSplitScreenLayout();
 
+    // 프록시 생성 및 설정
+    SetupCameraProxies();
+
     // 성공한 경우에만 동기화 시작
-    if (DummyPlayerController && DummySpectatorPawn)
+    if (DummyPlayerController && DummySpectatorPawn && ClientCamProxy)
     {
         GetWorldTimerManager().SetTimer(
             SyncTimerHandle,
-            [this]() { SyncDummyPlayerWithRemotePlayer(); },
+            [this]() { SyncDummyPlayerWithProxy(); },
             0.0083f,
             true
         );
@@ -118,21 +120,56 @@ void ASSGameMode::SetupOnlineSplitScreen()
     {
         UE_LOG(LogTemp, Error, TEXT("SS Split screen setup failed"));
     }
+}
 
-    // 1) 프록시가 없으면 생성
-    if (!ServerCamProxy)
+void ASSGameMode::SetupCameraProxies()
+{
+    FActorSpawnParameters Params;
+    Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+    // ConnectedPlayers에서 실제 플레이어 찾기
+    APlayerController* HostPC = nullptr;
+    APlayerController* ClientPC = nullptr;
+
+    for (APlayerController* PC : ConnectedPlayers)
     {
-        FActorSpawnParameters Params;
-        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-        ServerCamProxy = GetWorld()->SpawnActor<ASSCameraViewProxy>(ASSCameraViewProxy::StaticClass(), FTransform::Identity, Params);
-        UE_LOG(LogTemp, Warning, TEXT("SS Created ServerCamProxy"));
+        if (!PC || PC == DummyPlayerController) continue;
+
+        if (PC->IsLocalController())
+        {
+            HostPC = PC; // 리슨서버의 로컬 컨트롤러
+        }
+        else
+        {
+            ClientPC = PC; // 원격 클라이언트
+        }
     }
 
-    // 2) 서버 로컬 플레이어(리슨 서버)의 카메라를 소스로 지정
-    if (ServerCamProxy && HasAuthority())
+    UE_LOG(LogTemp, Warning, TEXT("SS Found Host PC: %s, Client PC: %s"),
+        HostPC ? *HostPC->GetName() : TEXT("NULL"),
+        ClientPC ? *ClientPC->GetName() : TEXT("NULL"));
+
+    // 1) 서버 카메라 프록시 (호스트용)
+    if (!ServerCamProxy)
     {
-        // 0번 인덱스 PC = 리슨서버의 화면
-        ServerCamProxy->SetSourceFromPlayerIndex(0);
+        ServerCamProxy = GetWorld()->SpawnActor<ASSCameraViewProxy>(ASSCameraViewProxy::StaticClass(), FTransform::Identity, Params);
+        if (ServerCamProxy && HasAuthority() && HostPC)
+        {
+            ServerCamProxy->SetSourcePC(HostPC); // 직접 PC 지정
+            UE_LOG(LogTemp, Warning, TEXT("SS Created ServerCamProxy with Host PC"));
+        }
+    }
+
+    // 2) 클라이언트 카메라 프록시 (클라이언트용)
+    if (!ClientCamProxy)
+    {
+        ClientCamProxy = GetWorld()->SpawnActor<ASSCameraViewProxy>(ASSCameraViewProxy::StaticClass(), FTransform::Identity, Params);
+        if (ClientCamProxy && HasAuthority() && ClientPC)
+        {
+            ClientCamProxy->SetSourcePC(ClientPC); // 직접 PC 지정
+            CachedClientProxy = ClientCamProxy;
+            UE_LOG(LogTemp, Warning, TEXT("SS Created ClientCamProxy with Client PC"));
+        }
     }
 }
 
@@ -189,7 +226,7 @@ void ASSGameMode::CreateDummyLocalPlayer()
         DummyPlayerController->SetAsDummyController(true);
 
         DummyPlayerController->SetPawn(nullptr);
-        
+
         DummyPlayerController->SetPlayer(DummyLocalPlayer);
         DummyPlayerController->Possess(DummySpectatorPawn);
 
@@ -197,65 +234,78 @@ void ASSGameMode::CreateDummyLocalPlayer()
     }
 }
 
-void ASSGameMode::SyncDummyPlayerWithRemotePlayer()
+void ASSGameMode::SyncDummyPlayerWithProxy()
 {
-    if (!DummySpectatorPawn || ConnectedPlayers.Num() < 2) return;
+    if (!DummySpectatorPawn) return;
 
-    // 원격 플레이어 찾기
-    APlayerController* RemotePlayer = nullptr;
-    for (int32 i = 1; i < ConnectedPlayers.Num(); i++)
+    // 캐시된 프록시 사용 (성능 최적화)
+    ASSCameraViewProxy* Proxy = CachedClientProxy.Get();
+    if (!Proxy)
     {
-        if (ConnectedPlayers[i] && ConnectedPlayers[i] != DummyPlayerController)
+        // 캐시가 없으면 ClientCamProxy 사용
+        Proxy = ClientCamProxy;
+        if (Proxy)
         {
-            RemotePlayer = ConnectedPlayers[i];
-            break;
-        }
-    }
-
-    if (!RemotePlayer || !RemotePlayer->GetPawn()) return;
-
-    APawn* RemotePawn = RemotePlayer->GetPawn();
-    UCameraComponent* RemoteCamera = RemotePawn->FindComponentByClass<UCameraComponent>();
-
-    if (RemoteCamera && DummySpectatorPawn->bSyncDirectlyToCamera)
-    {
-        // 목표 위치와 회전
-        FVector TargetLocation = RemoteCamera->GetComponentLocation();
-        FRotator TargetRotation = RemoteCamera->GetComponentRotation();
-
-        // 현재 위치와 회전
-        FVector CurrentLocation = DummySpectatorPawn->GetActorLocation();
-        FRotator CurrentRotation = DummySpectatorPawn->GetActorRotation();
-
-        // 보간 속도 (값이 클수록 빠르게 따라감)
-        float InterpSpeed = 35.0f; // 조정 가능
-        float RotationInterpSpeed = 45.0f; // 회전은 조금 더 느리게
-
-        // 거리 체크 - 너무 멀면 즉시 이동
-        float Distance = FVector::Dist(CurrentLocation, TargetLocation);
-        if (Distance > 500.0f) // 5미터 이상 차이나면 즉시 이동
-        {
-            DummySpectatorPawn->SetActorLocation(TargetLocation);
-            DummySpectatorPawn->SetActorRotation(TargetRotation);
+            CachedClientProxy = Proxy;
         }
         else
         {
-            // 부드럽게 보간
-            FVector NewLocation = FMath::VInterpTo(CurrentLocation, TargetLocation, GetWorld()->GetDeltaSeconds(), InterpSpeed);
-            FRotator NewRotation = FMath::RInterpTo(CurrentRotation, TargetRotation, GetWorld()->GetDeltaSeconds(), RotationInterpSpeed);
-
-            DummySpectatorPawn->SetActorLocation(NewLocation);
-            DummySpectatorPawn->SetActorRotation(NewRotation);
+            UE_LOG(LogTemp, Warning, TEXT("SS ClientCamProxy not found"));
+            return;
         }
+    }
 
-        // 컨트롤러 회전도 보간
-        if (DummyPlayerController)
+    // 클라이언트 카메라 데이터를 프록시에서 가져오기
+    const FRepCamInfo& ClientCam = Proxy->GetReplicatedCamera();
+
+    // 프록시 데이터 적용
+    ApplyProxyCamera(DummySpectatorPawn, ClientCam);
+}
+
+void ASSGameMode::ApplyProxyCamera(ASSDummySpectatorPawn* DummyPawn, const FRepCamInfo& CamData)
+{
+    if (!DummyPawn) return;
+
+    // 디버깅: 받은 카메라 데이터 로그
+    UE_LOG(LogTemp, Log, TEXT("SS ApplyProxyCamera - Rot: %s, Loc: %s"),
+        *CamData.Rotation.ToString(), *CamData.Location.ToString());
+
+    // SpringArm 사용 시 컨트롤러 회전이 더 중요
+    if (DummyPlayerController)
+    {
+        // 현재 컨트롤러 회전
+        FRotator CurrentControlRotation = DummyPlayerController->GetControlRotation();
+
+        // 거리 체크 - 너무 멀면 즉시 적용
+        float Distance = FVector::Dist(DummyPawn->GetActorLocation(), CamData.Location);
+
+        if (Distance > 500.0f)
         {
-            FRotator ControlRotation = RemotePlayer->GetControlRotation();
-            FRotator CurrentControlRotation = DummyPlayerController->GetControlRotation();
-            FRotator NewControlRotation = FMath::RInterpTo(CurrentControlRotation, ControlRotation, GetWorld()->GetDeltaSeconds(), RotationInterpSpeed);
-            DummyPlayerController->SetControlRotation(NewControlRotation);
+            // 즉시 적용
+            DummyPlayerController->SetControlRotation(CamData.Rotation);
+            DummyPawn->SetActorLocation(CamData.Location);
+            UE_LOG(LogTemp, Warning, TEXT("SS Large distance detected: %.2f, immediate correction"), Distance);
         }
+        else
+        {
+            // 부드러운 보간
+            float InterpSpeed = 35.0f;
+            float RotationInterpSpeed = 45.0f;
+            float DeltaTime = GetWorld()->GetDeltaSeconds();
+
+            FVector CurrentLocation = DummyPawn->GetActorLocation();
+            FVector NewLocation = FMath::VInterpTo(CurrentLocation, CamData.Location, DeltaTime, InterpSpeed);
+            FRotator NewControlRotation = FMath::RInterpTo(CurrentControlRotation, CamData.Rotation, DeltaTime, RotationInterpSpeed);
+
+            DummyPlayerController->SetControlRotation(NewControlRotation);
+            DummyPawn->SetActorLocation(NewLocation);
+        }
+    }
+
+    // FOV 적용
+    if (UCameraComponent* Camera = DummyPawn->FindComponentByClass<UCameraComponent>())
+    {
+        Camera->SetFieldOfView(CamData.FOV);
     }
 }
 

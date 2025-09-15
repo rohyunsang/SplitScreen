@@ -35,16 +35,24 @@ protected:
 
 private:
     TArray<APlayerController*> ConnectedPlayers;
+
     class ASSDummySpectatorPawn* DummySpectatorPawn;
     class ASSPlayerController* DummyPlayerController;
 
     void CreateDummyLocalPlayer();
-    void SyncDummyPlayerWithRemotePlayer();
-
+    void SyncDummyPlayerWithProxy();  // 이름 변경: 프록시 사용
+    void ApplyProxyCamera(class ASSDummySpectatorPawn* DummyPawn, const struct FRepCamInfo& CamData);
+    void SetupCameraProxies();
     FTimerHandle SyncTimerHandle;
-
 
 public:
     UPROPERTY() // GC 보호
-    class ASSCameraViewProxy* ServerCamProxy = nullptr;
+        class ASSCameraViewProxy* ServerCamProxy = nullptr;
+
+    UPROPERTY() // GC 보호  
+        class ASSCameraViewProxy* ClientCamProxy = nullptr;
+
+    // 캐시된 프록시 참조 (성능 최적화)
+private:
+    TWeakObjectPtr<class ASSCameraViewProxy> CachedClientProxy;
 };
