@@ -19,17 +19,6 @@ struct FRepCamInfo
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float FOV = 90.f;
-
-    UPROPERTY()
-    float Timestamp = 0.f;
-
-    FRepCamInfo()
-    {
-        Location = FVector::ZeroVector;
-        Rotation = FRotator::ZeroRotator;
-        FOV = 90.0f;
-        Timestamp = 0.0f;
-    }
 };
 
 UCLASS()
