@@ -26,6 +26,9 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Split Screen")
     TSubclassOf<APawn> DummySpectatorPawnClass;
 
+protected:
+    UFUNCTION(BlueprintCallable, Category = "Split Screen")
+    void SetupOnlineSplitScreen();
 
     UFUNCTION(BlueprintCallable, Category = "Split Screen")
     void UpdateSplitScreenLayout();
@@ -35,6 +38,8 @@ private:
     class ASSDummySpectatorPawn* DummySpectatorPawn;
     class ASSPlayerController* DummyPlayerController;
 
+    void CreateDummyLocalPlayer();
+    void SyncDummyPlayerWithRemotePlayer();
 
     FTimerHandle SyncTimerHandle;
 
