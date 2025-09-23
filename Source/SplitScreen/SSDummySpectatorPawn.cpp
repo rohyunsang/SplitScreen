@@ -15,13 +15,29 @@ ASSDummySpectatorPawn::ASSDummySpectatorPawn()
 
     CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
     RootComponent = CameraBoom;
-    CameraBoom->TargetArmLength = 400.f;          // 타겟과 카메라 거리
+
+    if (GetNetMode() == NM_DedicatedServer || GetNetMode() == NM_ListenServer)
+    {
+        CameraBoom->TargetArmLength = 0.f;     // 서버: 카메라가 Pawn에 붙음
+    }
+    else
+    {
+        CameraBoom->TargetArmLength = 400.f;   // 클라: 기본 거리 유지
+    }
+
     CameraBoom->bUsePawnControlRotation = true;   // 컨트롤러 회전 = 붐 회전
     CameraBoom->bDoCollisionTest = false;
 
     DummyCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
     DummyCamera->SetupAttachment(CameraBoom);
     DummyCamera->bUsePawnControlRotation = false;
+
+    // 카메라 랙 완전히 끄기
+    CameraBoom->bEnableCameraLag = false;
+    CameraBoom->CameraLagSpeed = 0.f;
+
+    CameraBoom->bEnableCameraRotationLag = false;
+    CameraBoom->CameraRotationLagSpeed = 0.f;
 
     bUseControllerRotationYaw = false;
     bUseControllerRotationPitch = false;
