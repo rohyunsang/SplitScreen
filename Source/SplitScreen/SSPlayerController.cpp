@@ -12,7 +12,6 @@
 #include "EngineUtils.h"
 #include "GameFramework/Character.h"
 #include "SSCameraViewProxy.h"
-#include "Net/UnrealNetwork.h" // Replicated
 
 void ASSPlayerController::BeginPlay()
 {
@@ -507,18 +506,6 @@ void ASSPlayerController::Tick(float DeltaTime)
     // 더미 컨트롤러는 네트워크 동기화 안함
     if (bIsDummyController) return;
 
-
-    // 로컬 플레이어만 컨트롤 회전을 서버로 전송
-    if (IsLocalController() && !HasAuthority())
-    {
-        TimeSinceLastRotationUpdate += DeltaTime;
-        if (TimeSinceLastRotationUpdate >= ControlRotationUpdateInterval)
-        {
-            ServerUpdateControlRotation(GetControlRotation());
-            TimeSinceLastRotationUpdate = 0.0f;
-        }
-    }
-
     // 로컬 플레이어만 위치 정보를 서버로 전송
     if (IsLocalController() && GetPawn())
     {
@@ -564,30 +551,3 @@ void ASSPlayerController::ClientReceiveRemotePlayerLocation_Implementation(FVect
     // UE_LOG(LogTemp, Log, TEXT("SS Received remote player location: %s"), *Location.ToString());
 }
 
-void ASSPlayerController::ServerUpdateControlRotation_Implementation(FRotator NewRotation)
-{
-    // 서버에서 받은 회전값 저장 및 복제
-    ReplicatedControlRotation = NewRotation;
-    SetControlRotation(NewRotation); // 서버의 이 PC에도 적용
-}
-
-bool ASSPlayerController::ServerUpdateControlRotation_Validate(FRotator NewRotation)
-{
-    return true;
-}
-
-void ASSPlayerController::OnRep_ReplicatedControlRotation()
-{
-    // 다른 클라이언트에서 회전값 수신
-    if (!IsLocalController())
-    {
-        SetControlRotation(ReplicatedControlRotation);
-    }
-}
-
-void ASSPlayerController::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
-{
-    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-
-    DOREPLIFETIME_CONDITION(ASSPlayerController, ReplicatedControlRotation, COND_SkipOwner);
-}
