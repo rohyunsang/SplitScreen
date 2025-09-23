@@ -26,6 +26,7 @@ void ASSCameraViewProxy::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
     DOREPLIFETIME(ASSCameraViewProxy, RepCam);
+    DOREPLIFETIME(ASSCameraViewProxy, RepView);
 }
 
 void ASSCameraViewProxy::SetSourcePC(APlayerController* InPC)
@@ -147,4 +148,9 @@ bool ASSCameraViewProxy::ServerUpdateClientCamera_Validate(const FRepCamInfo& Ne
 {
     // 여기서 데이터 유효성 검증 가능 (위치 값이 NaN인지, Rotation이 정상인지 등)
     return true; // 기본적으로 항상 허용
+}
+
+void ASSCameraViewProxy::ServerUpdateClientView_Implementation(const FRepPlayerView& NewView)
+{
+    RepView = NewView; // 서버가 그대로 보관 → 다른 플레이어들에게 복제
 }

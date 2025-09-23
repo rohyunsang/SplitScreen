@@ -478,6 +478,28 @@ void ASSPlayerController::Tick(float DeltaTime)
     // 더미 컨트롤러는 네트워크 동기화 안함
     if (bIsDummyController) return;
 
+    if (IsLocalController())
+    {
+        if (ACharacter* MyChar = GetCharacter())
+        {
+            if (PlayerCameraManager)
+            {
+                FMinimalViewInfo POV = PlayerCameraManager->GetCameraCacheView();
+
+                FRepPlayerView NewView;
+                NewView.CharacterLocation = MyChar->GetActorLocation();
+                NewView.CameraRotation = POV.Rotation;
+                NewView.FOV = POV.FOV;
+                NewView.Timestamp = GetWorld()->GetTimeSeconds();
+
+                if (CachedProxy.IsValid())
+                {
+                    CachedProxy->ServerUpdateClientView(NewView);
+                }
+            }
+        }
+    }
+
     /*
     // 로컬 플레이어만 위치 정보를 서버로 전송
     if (IsLocalController() && GetPawn())

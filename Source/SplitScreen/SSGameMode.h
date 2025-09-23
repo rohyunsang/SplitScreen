@@ -72,10 +72,10 @@ private:
 
     // 예측 설정값들
     UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    float MaxPredictionTime = 0.2f; // 최대 예측 시간 (200ms)
+    float MaxPredictionTime = 0.03f; // 최대 예측 시간 (200ms)
 
     UPROPERTY(EditAnywhere, Category = "Camera Prediction")
-    float CorrectionSpeed = 10.0f; // 클라이언트 데이터로 보정하는 속도
+    float CorrectionSpeed = 30.f; // 클라이언트 데이터로 보정하는 속도
 
     UPROPERTY(EditAnywhere, Category = "Camera Prediction")
     int32 MaxHistorySize = 10; // 저장할 히스토리 개수

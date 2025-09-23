@@ -21,6 +21,24 @@ struct FRepCamInfo
     float FOV = 90.f;
 };
 
+USTRUCT(BlueprintType)
+struct FRepPlayerView
+{
+    GENERATED_BODY()
+
+    UPROPERTY()
+    FVector CharacterLocation;
+
+    UPROPERTY()
+    FRotator CameraRotation;
+
+    UPROPERTY()
+    float FOV = 90.f;
+
+    UPROPERTY()
+    float Timestamp = 0.f; // ¿¹Ãø¿ë
+};
+
 UCLASS()
 class SPLITSCREEN_API ASSCameraViewProxy : public AActor
 {
@@ -28,6 +46,22 @@ class SPLITSCREEN_API ASSCameraViewProxy : public AActor
 	
 public:
     ASSCameraViewProxy();
+
+
+
+//
+    UPROPERTY(Replicated)
+    FRepPlayerView RepView;
+
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerUpdateClientView(const FRepPlayerView& NewView);
+    void ServerUpdateClientView_Implementation(const FRepPlayerView& NewView);
+    bool ServerUpdateClientView_Validate(const FRepPlayerView& NewView) { return true; }
+
+    const FRepPlayerView& GetReplicatedView() const { return RepView; }
+
+
+// 
 
     virtual void Tick(float DeltaSeconds) override;
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;

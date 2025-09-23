@@ -213,14 +213,48 @@ void ASSGameMode::SyncDummyPlayerWithRemotePlayer()
 
     // 원격 클라이언트 찾기 (로컬이 아닌 첫 번째 플레이어)
     APlayerController* RemoteClient = nullptr;
-    for (APlayerController* PC : ConnectedPlayers)
+    if (!RemoteClient)
     {
-        if (PC && !PC->IsLocalController())
+        for (APlayerController* PC : ConnectedPlayers)
         {
-            RemoteClient = PC;
-            break;
+            if (PC && !PC->IsLocalController())
+            {
+                RemoteClient = PC;
+                break;
+            }
         }
     }
+//
+    const FRepPlayerView& ClientView = ServerCamProxy->GetReplicatedView();
+    // 예측 및 보정은 선택적으로 (간단 버전은 바로 적용)
+    FVector NewLocation = FMath::VInterpTo(
+        DummySpectatorPawn->GetActorLocation(),
+        ClientView.CharacterLocation,
+        GetWorld()->GetDeltaSeconds(),
+        20.f
+    );
+
+    DummySpectatorPawn->SetActorLocation(NewLocation);
+
+    if (APlayerController* DummyController = Cast<APlayerController>(DummySpectatorPawn->GetController()))
+    {
+        FRotator NewRotation = FMath::RInterpTo(
+            DummyController->GetControlRotation(),
+            ClientView.CameraRotation,
+            GetWorld()->GetDeltaSeconds(),
+            30.f
+        );
+        DummyController->SetControlRotation(NewRotation);
+    }
+
+    if (UCameraComponent* Cam = DummySpectatorPawn->FindComponentByClass<UCameraComponent>())
+    {
+        Cam->SetFieldOfView(ClientView.FOV);
+    }
+
+//
+
+    /*
 
     if (!RemoteClient)
     {
@@ -263,6 +297,8 @@ void ASSGameMode::SyncDummyPlayerWithRemotePlayer()
 
     // 4) 더미 폰에 예측된 카메라 적용
     ApplyPredictedClientCamera(DummySpectatorPawn, PredictedState);
+
+    */
 }
 
 // === 카메라 예측 시스템 구현 함수들 ===
@@ -412,7 +448,7 @@ void ASSGameMode::ApplyPredictedClientCamera(ASSDummySpectatorPawn* DummyPawn, c
 
         // 현재 더미 폰 위치
         FVector CurrentLocation = DummyPawn->GetActorLocation();
-        float InterpSpeed = 35.f;
+        float InterpSpeed = 5.f;
 
         // 거리 차이가 크면 바로 스냅
         float Distance = FVector::Dist(CurrentLocation, TargetPivot);
