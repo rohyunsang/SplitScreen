@@ -13,29 +13,30 @@ ASSDummySpectatorPawn::ASSDummySpectatorPawn()
 {
     PrimaryActorTick.bCanEverTick = true;
 
+    // 1) SkeletalMesh 먼저 생성 → RootComponent 지정
+    SkeletalMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("SkeletalMesh"));
+    RootComponent = SkeletalMesh;
+    SkeletalMesh->SetVisibility(false);   // 보이지 않게
+    SkeletalMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+    // 2) SpringArm을 SkeletalMesh에 붙임
     CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
-    RootComponent = CameraBoom;
+    CameraBoom->SetupAttachment(SkeletalMesh);
 
-    if (GetNetMode() == NM_DedicatedServer || GetNetMode() == NM_ListenServer)
-    {
-        CameraBoom->TargetArmLength = 0.f;     // 서버: 카메라가 Pawn에 붙음
-    }
-    else
-    {
-        CameraBoom->TargetArmLength = 400.f;   // 클라: 기본 거리 유지
-    }
+    // 네트모드 체크는 BeginPlay()에서 하는 게 안전함 (생성자에선 월드 컨텍스트 불안정)
+    CameraBoom->TargetArmLength = 400.f;
 
-    CameraBoom->bUsePawnControlRotation = true;   // 컨트롤러 회전 = 붐 회전
+    CameraBoom->bUsePawnControlRotation = true;
     CameraBoom->bDoCollisionTest = false;
 
-    DummyCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
+    // 3) 카메라 생성해서 SpringArm에 붙임
+    DummyCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("DummyCamera"));
     DummyCamera->SetupAttachment(CameraBoom);
     DummyCamera->bUsePawnControlRotation = false;
 
-    // 카메라 랙 완전히 끄기
+    // 랙 제거
     CameraBoom->bEnableCameraLag = false;
     CameraBoom->CameraLagSpeed = 0.f;
-
     CameraBoom->bEnableCameraRotationLag = false;
     CameraBoom->CameraRotationLagSpeed = 0.f;
 
@@ -43,14 +44,24 @@ ASSDummySpectatorPawn::ASSDummySpectatorPawn()
     bUseControllerRotationPitch = false;
     bUseControllerRotationRoll = false;
 
-    // 더미 폰을 안보이게 설정
+    // Pawn 안보이게
     SetActorHiddenInGame(true);
     SetActorEnableCollision(false);
 }
 
+
 void ASSDummySpectatorPawn::BeginPlay()
 {
     Super::BeginPlay();
+
+    if (GetNetMode() == NM_DedicatedServer || GetNetMode() == NM_ListenServer)
+    {
+        CameraBoom->TargetArmLength = 0.f;
+    }
+    else
+    {
+        CameraBoom->TargetArmLength = 400.f;
+    }
 
     UE_LOG(LogTemp, Warning, TEXT("[NetMode : %d] SS Dummy Spectator Pawn Created - Camera Sync Mode: %s"),
         GetWorld()->GetNetMode(),
