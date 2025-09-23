@@ -478,6 +478,7 @@ void ASSPlayerController::Tick(float DeltaTime)
     // 더미 컨트롤러는 네트워크 동기화 안함
     if (bIsDummyController) return;
 
+    /*
     // 로컬 플레이어만 위치 정보를 서버로 전송
     if (IsLocalController() && GetPawn())
     {
@@ -490,7 +491,10 @@ void ASSPlayerController::Tick(float DeltaTime)
             TimeSinceLastUpdate = 0.0f;
         }
     }
+
+    */
 }
+
 
 void ASSPlayerController::ServerUpdatePlayerLocation_Implementation(FVector Location, FRotator Rotation)
 {
