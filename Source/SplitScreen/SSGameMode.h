@@ -10,7 +10,7 @@
  * 
  */
 UCLASS()
-class SPLITSCREEN_API ASSGameMode : public AGameModeBase
+class SPLITSCREEN_API ASSGameMode : public AGameModeBase        
 {
 	GENERATED_BODY()
 	
@@ -47,4 +47,10 @@ private:
 public:
     UPROPERTY() // GC º¸È£
     class ASSCameraViewProxy* ServerCamProxy = nullptr;
+
+    UPROPERTY()
+    TMap<APlayerController*, ASSCameraViewProxy*> ClientCamProxies;
+        
+    UPROPERTY()
+    TMap<APlayerController*, ASSDummySpectatorPawn*> ClientSpectatorPawns;
 };
