@@ -27,7 +27,8 @@ ASSDummySpectatorPawn::ASSDummySpectatorPawn()
     CameraBoom->TargetArmLength = 400.f;
 
     CameraBoom->bUsePawnControlRotation = true;
-    CameraBoom->bDoCollisionTest = false;
+    //CameraBoom->bDoCollisionTest = false;
+    CameraBoom->ProbeChannel = ECC_Camera;
 
     // 3) 카메라 생성해서 SpringArm에 붙임
     DummyCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("DummyCamera"));
