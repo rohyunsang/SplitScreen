@@ -64,7 +64,10 @@ void ASSGameMode::PostLogin(APlayerController* NewPlayer)
 
         if (ClientProxy)
         {
+            ClientProxy->SetOwner(NewPlayer);   // 명시적으로 소유권 세팅
+            ClientProxy->SetReplicates(true);   // 복제 활성화
             ClientCamProxies.Add(NewPlayer, ClientProxy);
+
             UE_LOG(LogTemp, Warning, TEXT("SS Created ClientCamProxy for %s (Owner: %s)"),
                 *NewPlayer->GetName(), *ClientProxy->GetOwner()->GetName());
         }
@@ -209,97 +212,56 @@ void ASSGameMode::CreateDummyLocalPlayer()
 
 void ASSGameMode::SyncDummyPlayerWithRemotePlayer()
 {
-    if (!DummySpectatorPawn || !ServerCamProxy) return;
+    if (!DummySpectatorPawn) return;
 
-    // 원격 클라이언트 찾기 (로컬이 아닌 첫 번째 플레이어)
+    // === 원격 클라 찾기 ===
     APlayerController* RemoteClient = nullptr;
-    if (!RemoteClient)
+    for (APlayerController* PC : ConnectedPlayers)
     {
-        for (APlayerController* PC : ConnectedPlayers)
+        if (PC && !PC->IsLocalController()) // 원격 클라만
         {
-            if (PC && !PC->IsLocalController())
-            {
-                RemoteClient = PC;
-                break;
-            }
+            RemoteClient = PC;
+            break;
         }
     }
-//
-    const FRepPlayerView& ClientView = ServerCamProxy->GetReplicatedView();
-    // 예측 및 보정은 선택적으로 (간단 버전은 바로 적용)
-    FVector NewLocation = FMath::VInterpTo(
-        DummySpectatorPawn->GetActorLocation(),
-        ClientView.CharacterLocation,
-        GetWorld()->GetDeltaSeconds(),
-        20.f
-    );
+    if (!RemoteClient) return;
 
-    DummySpectatorPawn->SetActorLocation(NewLocation);
-
-    if (APlayerController* DummyController = Cast<APlayerController>(DummySpectatorPawn->GetController()))
+    // === 해당 클라의 Proxy 가져오기 ===
+    ASSCameraViewProxy* ClientProxy = nullptr;
+    if (ClientCamProxies.Contains(RemoteClient))
     {
-        FRotator NewRotation = FMath::RInterpTo(
-            DummyController->GetControlRotation(),
+        ClientProxy = ClientCamProxies[RemoteClient];
+    }
+    if (!ClientProxy) return;
+
+    // === 최신 클라 View 가져오기 ===
+    const FRepPlayerView& ClientView = ClientProxy->GetReplicatedView();
+
+    bool bNewData = false;
+    if (!LastClientCamera.Location.Equals(ClientView.CharacterLocation, 1.0f) ||
+        !LastClientCamera.Rotation.Equals(ClientView.CameraRotation, 1.0f))
+    {
+        bNewData = true;
+        UpdateClientCameraHistory(FRepCamInfo{
+            ClientView.CharacterLocation,
             ClientView.CameraRotation,
-            GetWorld()->GetDeltaSeconds(),
-            30.f
-        );
-        DummyController->SetControlRotation(NewRotation);
+            ClientView.FOV
+            });
     }
 
-    if (UCameraComponent* Cam = DummySpectatorPawn->FindComponentByClass<UCameraComponent>())
-    {
-        Cam->SetFieldOfView(ClientView.FOV);
-    }
-
-//
-
-    /*
-
-    if (!RemoteClient)
-    {
-        UE_LOG(LogTemp, Verbose, TEXT("SS Server: No remote client found"));
-        return;
-    }
-
-    // 해당 클라이언트의 Proxy 찾기
-    ASSCameraViewProxy** FoundProxy = ClientCamProxies.Find(RemoteClient);
-    if (!FoundProxy || !*FoundProxy)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("SS Server: No camera proxy found for remote client"));
-        return;
-    }
-
-    ASSCameraViewProxy* ClientProxy = *FoundProxy;
-    const FRepCamInfo& RemoteClientCam = ClientProxy->GetReplicatedCamera();
-
-    // === 예측 시스템 적용 ===
-
-    // 1) 새로운 클라이언트 데이터가 도착했는지 확인
-    bool bNewClientData = false;
-    if (!LastClientCamera.Location.Equals(RemoteClientCam.Location, 1.0f) ||
-        !LastClientCamera.Rotation.Equals(RemoteClientCam.Rotation, 1.0f))
-    {
-        bNewClientData = true;
-        UpdateClientCameraHistory(RemoteClientCam);
-        UE_LOG(LogTemp, VeryVerbose, TEXT("SS Server: New client camera data - Rotation: %s"),
-            *RemoteClientCam.Rotation.ToString());
-    }
-
-    // 2) 카메라 위치 예측 수행
     FCameraPredictionData PredictedState = PredictClientCameraMovement();
-
-    // 3) 클라이언트 데이터로 예측 보정 (새 데이터가 있을 때만)
-    if (bNewClientData)
+    if (bNewData)
     {
-        PredictedState = CorrectPredictionWithClientData(PredictedState, RemoteClientCam);
+        PredictedState = CorrectPredictionWithClientData(
+            PredictedState,
+            FRepCamInfo{ ClientView.CharacterLocation, ClientView.CameraRotation, ClientView.FOV }
+        );
     }
 
-    // 4) 더미 폰에 예측된 카메라 적용
     ApplyPredictedClientCamera(DummySpectatorPawn, PredictedState);
-
-    */
 }
+
+
 
 // === 카메라 예측 시스템 구현 함수들 ===
 
@@ -430,89 +392,47 @@ void ASSGameMode::ApplyPredictedClientCamera(ASSDummySpectatorPawn* DummyPawn, c
 {
     if (!DummyPawn) return;
 
-    // 원격 클라이언트의 폰 찾기
-    APlayerController* RemoteClient = nullptr;
-    for (APlayerController* PC : ConnectedPlayers)
+    // === 위치 적용 (예측/보정 값 사용) ===
+    FVector CurrentLocation = DummyPawn->GetActorLocation();
+    float Distance = FVector::Dist(CurrentLocation, CameraData.Location);
+
+    if (Distance > 200.0f) // 큰 오차 → 즉시 보정
     {
-        if (PC && !PC->IsLocalController())
-        {
-            RemoteClient = PC;
-            break;
-        }
-    }
-
-    if (RemoteClient && RemoteClient->GetPawn())
-    {
-        // 클라이언트 폰 위치를 피벗으로 사용
-        FVector TargetPivot = RemoteClient->GetPawn()->GetActorLocation();
-
-        // 현재 더미 폰 위치
-        FVector CurrentLocation = DummyPawn->GetActorLocation();
-        float InterpSpeed = 5.f;
-
-        // 거리 차이가 크면 바로 스냅
-        float Distance = FVector::Dist(CurrentLocation, TargetPivot);
-        if (Distance > 500.0f)
-        {
-            DummyPawn->SetActorLocation(TargetPivot);
-            UE_LOG(LogTemp, Log, TEXT("SS Server: Dummy snapped to client at: %s"), *TargetPivot.ToString());
-        }
-        else
-        {
-            // 부드럽게 보간 - 클라이언트 폰 위치로
-            FVector NewLocation = FMath::VInterpTo(
-                CurrentLocation,
-                TargetPivot,
-                GetWorld()->GetDeltaSeconds(),
-                InterpSpeed
-            );
-            DummyPawn->SetActorLocation(NewLocation);
-        }
+        DummyPawn->SetActorLocation(CameraData.Location);
+        UE_LOG(LogTemp, Log, TEXT("SS Server: Dummy snapped to predicted location (%.1fcm error)"), Distance);
     }
     else
     {
-        // 클라이언트 폰이 없으면 예측된 카메라 위치 직접 사용
-        FVector CurrentLocation = DummyPawn->GetActorLocation();
-        float Distance = FVector::Dist(CurrentLocation, CameraData.Location);
-
-        if (Distance > 500.0f)
-        {
-            DummyPawn->SetActorLocation(CameraData.Location);
-        }
-        else
-        {
-            FVector NewLocation = FMath::VInterpTo(
-                CurrentLocation,
-                CameraData.Location,
-                GetWorld()->GetDeltaSeconds(),
-                35.f
-            );
-            DummyPawn->SetActorLocation(NewLocation);
-        }
+        FVector NewLocation = FMath::VInterpTo(
+            CurrentLocation,
+            CameraData.Location,
+            GetWorld()->GetDeltaSeconds(),
+            15.f // 보정 속도
+        );
+        DummyPawn->SetActorLocation(NewLocation);
     }
 
-    // 컨트롤러 회전은 예측된 클라이언트 카메라 회전으로
+    // === 회전 적용 ===
     if (DummyPlayerController)
     {
-        FRotator CurrentControlRotation = DummyPlayerController->GetControlRotation();
-        FRotator NewControlRotation = FMath::RInterpTo(
-            CurrentControlRotation,
-            CameraData.Rotation, // 예측된 회전 사용
+        FRotator CurrentRot = DummyPlayerController->GetControlRotation();
+        FRotator NewRot = FMath::RInterpTo(
+            CurrentRot,
+            CameraData.Rotation,
             GetWorld()->GetDeltaSeconds(),
-            45.f
+            20.f
         );
-        DummyPlayerController->SetControlRotation(NewControlRotation);
-
-        UE_LOG(LogTemp, VeryVerbose, TEXT("SS Server: Applied predicted client rotation: %s"),
-            *NewControlRotation.ToString());
+        DummyPlayerController->SetControlRotation(NewRot);
     }
 
-    // 카메라 FOV 적용
+    // === FOV 적용 ===
     if (UCameraComponent* Camera = DummyPawn->FindComponentByClass<UCameraComponent>())
     {
         Camera->SetFieldOfView(CameraData.FOV);
     }
 }
+
+
 
 void ASSGameMode::UpdateSplitScreenLayout()
 {

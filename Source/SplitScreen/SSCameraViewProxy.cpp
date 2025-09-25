@@ -16,6 +16,8 @@ ASSCameraViewProxy::ASSCameraViewProxy()
     NetUpdateFrequency = 120.f;   // 필요 시 조정
     SetReplicateMovement(false); // 우리는 위치/회전을 액터 위치로 안 쓰고, RepCam만 복제
 
+    bNetUseOwnerRelevancy = true;  // Owner 기반 관련성 사용
+
 #if WITH_EDITOR
     SetActorLabel(TEXT("ASSCameraViewProxy"));
 #endif
