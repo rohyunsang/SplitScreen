@@ -190,7 +190,7 @@ void ASSGameMode::AttachDummySpectatorToClient(APlayerController* RemoteClient)
     {
         // 클라 캐릭터 스켈레톤 소켓에 Attach
         FAttachmentTransformRules AttachRules(EAttachmentRule::SnapToTarget, true);
-        DummySpectatorPawn->AttachToComponent(Mesh, AttachRules, FName("head"));
+        DummySpectatorPawn->AttachToComponent(Mesh, AttachRules, FName("camera_socket"));
         // "head" 대신 캐릭터 스켈레톤 소켓 이름 사용
 
         // Pawn은 보이지 않게 설정
