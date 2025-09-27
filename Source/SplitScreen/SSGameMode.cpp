@@ -4,15 +4,12 @@
 #include "SSGameInstance.h"
 #include "SSDummySpectatorPawn.h"
 #include "SSPlayerController.h"
-#include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/PlatformMisc.h" // FPlatformUserId 사용을 위해 추가
 #include "TimerManager.h" // GetWorldTimerManager() 사용을 위해
 #include "SSCameraViewProxy.h"
-#include "Kismet/GameplayStatics.h"
-#include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 
 ASSGameMode::ASSGameMode()
