@@ -36,33 +36,16 @@ public:
     UPROPERTY()
     TMap<APlayerController*, ASSCameraViewProxy*> ClientCamProxies;
 
-    UPROPERTY()
-    TMap<APlayerController*, ASSDummySpectatorPawn*> ClientSpectatorPawns;
-
-    // SSGameMode.h
-    UPROPERTY()
-    UCameraComponent* AttachedServerCamera;
-
-    UPROPERTY()
-    APawn* DummyViewTargetPawn;
-
-    void AttachDummySpectatorToClient(APlayerController* RemoteClient);
-    void SyncDummyRotationWithProxy();
-
-protected:
-    UFUNCTION(BlueprintCallable, Category = "Split Screen")
-    void SetupOnlineSplitScreen();
-
 private:
     TArray<APlayerController*> ConnectedPlayers;
     class ASSDummySpectatorPawn* DummySpectatorPawn;
     class ASSPlayerController* DummyPlayerController;
 
     void CreateDummyLocalPlayer();
+    void AttachDummySpectatorToClient(APlayerController* RemoteClient);
+    void SyncDummyRotationWithProxy();
+    void SetupOnlineSplitScreen();
 
     FTimerHandle SyncTimerHandle;
     FTimerHandle RotationSyncTimerHandle;
-
-
-
 };
