@@ -13,6 +13,7 @@
 #include "SSCameraViewProxy.h"
 #include "Kismet/GameplayStatics.h"
 #include "Camera/CameraComponent.h"
+#include "Components/CapsuleComponent.h"
 
 ASSGameMode::ASSGameMode()
 {
@@ -96,9 +97,6 @@ void ASSGameMode::PostLogin(APlayerController* NewPlayer)
             // 서버 Proxy도 복제되도록 설정
             ServerCamProxy->SetReplicates(true);
             ServerCamProxy->SetReplicateMovement(false);
-
-            // 서버 플레이어 인덱스 0으로 설정
-            // ServerCamProxy->SetSourcePlayerIndex(0);
 
             UE_LOG(LogTemp, Warning, TEXT("SS Created ServerCamProxy (ListenServer POV, No Owner)"));
         }
@@ -267,6 +265,7 @@ void ASSGameMode::CreateDummyLocalPlayer()
     }
 }
 
+
 void ASSGameMode::SyncDummyRotationWithProxy()
 {
     // 1. 원격 클라 찾기
@@ -296,11 +295,47 @@ void ASSGameMode::SyncDummyRotationWithProxy()
     ASSCameraViewProxy* ClientProxy = *FoundProxy;
     const FRepCamInfo& RemoteClientCam = ClientProxy->GetReplicatedCamera();
 
-    // 3. 회전만 동기화
+    if (!DummySpectatorPawn || !DummyPlayerController)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS DummySpectatorPawn or DummyPlayerController invalid"));
+        return;
+    }
+
+    // 3. 위치 동기화 (캐릭터 크기만큼 오프셋 적용)
+    APawn* ClientPawn = RemoteClient->GetPawn();
+    FVector TargetLoc = RemoteClientCam.Location; // 기본값: 클라 카메라 위치 그대로
+
+    if (ClientPawn)
+    {
+        // 3-1) 스켈레톤 "head" 소켓 기준
+        if (USkeletalMeshComponent* Mesh = ClientPawn->FindComponentByClass<USkeletalMeshComponent>())
+        {
+            if (Mesh->DoesSocketExist(TEXT("camera_socket")))
+            {
+                TargetLoc = Mesh->GetSocketLocation(TEXT("camera_socket"));
+                // Socket이 없으면 기본으로 캐릭터의 중앙인듯. 
+            }
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("SS no head socket "));
+        }
+    }
+
+    FVector NewLoc = FMath::VInterpTo(
+        DummySpectatorPawn->GetActorLocation(),
+        TargetLoc,
+        GetWorld()->GetDeltaSeconds(),
+        35.f // 보간 속도
+    );
+
+    DummySpectatorPawn->SetActorLocation(NewLoc);
+
+    // 4. 회전은 클라 입력값을 그대로 쓰거나 무시 (옵션)
+    //    여기서는 클라 카메라 회전 그대로 반영
     FRotator TargetRot = RemoteClientCam.Rotation;
     FRotator CurrentRot = DummyPlayerController->GetControlRotation();
 
-    // 부드럽게 보간
     FRotator NewRot = FMath::RInterpTo(
         CurrentRot,
         TargetRot,
@@ -310,9 +345,7 @@ void ASSGameMode::SyncDummyRotationWithProxy()
 
     DummyPlayerController->SetControlRotation(NewRot);
 
-    UE_LOG(LogTemp, Verbose, TEXT("SS Server: Synced dummy rotation -> %s"), *NewRot.ToString());
+    UE_LOG(LogTemp, Verbose, TEXT("SS Server: Synced dummy location=%s, rotation=%s"),
+        *NewLoc.ToString(), *NewRot.ToString());
 }
-
-
-
 
