@@ -51,7 +51,7 @@ void ASSPlayerController::BeginPlay()
                         SetupClientSplitScreen();
                     }
                 },
-                2.0f, // 2초 지연
+                1.0f, // n초 지연
                 false
             );
         }
