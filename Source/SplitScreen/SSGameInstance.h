@@ -30,17 +30,6 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Split Screen")
     void DisableSplitScreen();
 
-    // 토글 기능
-    UFUNCTION(BlueprintCallable, Category = "Split Screen")
-    void ToggleSplitScreen();
-
-    // 듀얼 모드 설정/해제
-    UFUNCTION(BlueprintCallable, Category = "Split Screen")
-    void SetDualMode(bool bEnabled);
-
-    UFUNCTION(BlueprintCallable, Category = "Split Screen")
-    void ToggleDualMode();
-
     // 상태 확인 함수들
     UFUNCTION(BlueprintPure, Category = "Split Screen")
     bool IsSplitScreenEnabled() const { return bSplitScreenActive; }

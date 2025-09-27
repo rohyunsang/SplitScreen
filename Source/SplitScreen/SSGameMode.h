@@ -4,13 +4,17 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
+#include "SSDummySpectatorPawn.h"
+#include "SSPlayerController.h"
 #include "SSGameMode.generated.h"
+
+struct FCameraPredictionData;
 
 /**
  * 
  */
 UCLASS()
-class SPLITSCREEN_API ASSGameMode : public AGameModeBase
+class SPLITSCREEN_API ASSGameMode : public AGameModeBase        
 {
 	GENERATED_BODY()
 	
@@ -26,12 +30,11 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Split Screen")
     TSubclassOf<APawn> DummySpectatorPawnClass;
 
-protected:
-    UFUNCTION(BlueprintCallable, Category = "Split Screen")
-    void SetupOnlineSplitScreen();
+    UPROPERTY() // GC 보호
+    class ASSCameraViewProxy* ServerCamProxy = nullptr;
 
-    UFUNCTION(BlueprintCallable, Category = "Split Screen")
-    void UpdateSplitScreenLayout();
+    UPROPERTY()
+    TMap<APlayerController*, ASSCameraViewProxy*> ClientCamProxies;
 
 private:
     TArray<APlayerController*> ConnectedPlayers;
@@ -39,12 +42,10 @@ private:
     class ASSPlayerController* DummyPlayerController;
 
     void CreateDummyLocalPlayer();
-    void SyncDummyPlayerWithRemotePlayer();
+    void AttachDummySpectatorToClient(APlayerController* RemoteClient);
+    void SyncDummyRotationWithProxy();
+    void SetupOnlineSplitScreen();
 
     FTimerHandle SyncTimerHandle;
-
-
-public:
-    UPROPERTY() // GC 보호
-    class ASSCameraViewProxy* ServerCamProxy = nullptr;
+    FTimerHandle RotationSyncTimerHandle;
 };

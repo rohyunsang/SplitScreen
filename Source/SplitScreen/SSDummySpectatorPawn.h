@@ -18,6 +18,13 @@ class SPLITSCREEN_API ASSDummySpectatorPawn : public ASpectatorPawn
 public:
     ASSDummySpectatorPawn();
 
+    /** Skeletal Mesh - 카메라 스프링암을 Mesh에 붙여 네트워크 보간을 따라가게 함 */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+    class USkeletalMeshComponent* SkeletalMesh;
+
+    UPROPERTY()
+    TObjectPtr<class USpringArmComponent> CameraBoom;
+
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera")
     UCameraComponent* DummyCamera;
 
@@ -75,4 +82,5 @@ private:
     FRotator CalculateLookAtRotation(const FVector& FromPos, const FVector& ToPos);
     UCameraComponent* FindCameraInPawn(APawn* Pawn);
     void UpdateTargetCamera();
+
 };

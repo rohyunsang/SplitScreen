@@ -13,7 +13,6 @@
 #include "GameFramework/Character.h"
 #include "SSCameraViewProxy.h"
 
-
 void ASSPlayerController::BeginPlay()
 {
     Super::BeginPlay();
@@ -243,7 +242,7 @@ void ASSPlayerController::StartClientDummySync(ASSDummySpectatorPawn* DummyPawn)
         {
             SyncClientDummyWithRemotePlayer(DummyPawn);
         },
-        0.0083f, 
+        0.016f,
         true
     );
 }
@@ -342,31 +341,33 @@ FCameraPredictionData ASSPlayerController::PredictCameraMovement()
 
     if (PredictionDelta > 0.0f && CameraHistory.Num() >= 2)
     {
-        // 속도 기반 예측
+        // 위치는 기존처럼 '속도(+가속도)' 기반 예측
         Predicted.Location = LatestData.Location + (LatestData.Velocity * PredictionDelta);
 
-        // 회전 예측 (각속도 적용)
-        FRotator PredictedRotation = LatestData.Rotation;
-        PredictedRotation.Pitch += LatestData.AngularVelocity.X * PredictionDelta;
-        PredictedRotation.Yaw += LatestData.AngularVelocity.Y * PredictionDelta;
-        PredictedRotation.Roll += LatestData.AngularVelocity.Z * PredictionDelta;
-        Predicted.Rotation = PredictedRotation.GetNormalized();
-
-        // 가속도 기반 보정 (2차 예측)
         if (CameraHistory.Num() >= 3)
         {
             const FCameraPredictionData& PrevData = CameraHistory[CameraHistory.Num() - 2];
-            FVector Acceleration = (LatestData.Velocity - PrevData.Velocity) /
-                FMath::Max(LatestData.Timestamp - PrevData.Timestamp, 0.001f);
-
-            // 가속도를 고려한 위치 보정
-            Predicted.Location += 0.5f * Acceleration * PredictionDelta * PredictionDelta;
+            const float Den = FMath::Max(LatestData.Timestamp - PrevData.Timestamp, 0.001f);
+            const FVector Accel = (LatestData.Velocity - PrevData.Velocity) / Den;
+            Predicted.Location += 0.5f * Accel * PredictionDelta * PredictionDelta;
         }
+
+        // [변경] 회전 예측 제거: 각속도 적용 안 함
+        //       → 항상 최신 서버 스냅샷의 회전을 그대로 사용
+        Predicted.Rotation = LatestData.Rotation;
+    }
+    else
+    {
+        // Δt가 0이거나 히스토리가 부족하면 그대로
+        Predicted.Location = LatestData.Location;
+        Predicted.Rotation = LatestData.Rotation; // [변경] 회전 예측 없음
     }
 
+    Predicted.FOV = LatestData.FOV;
     PredictedCamera = Predicted;
     return Predicted;
 }
+
 
 FCameraPredictionData ASSPlayerController::CorrectPredictionWithServerData(
     const FCameraPredictionData& Prediction,
@@ -414,14 +415,23 @@ FCameraPredictionData ASSPlayerController::CorrectPredictionWithServerData(
 
 void ASSPlayerController::ApplyPredictedCamera(ASSDummySpectatorPawn* DummyPawn, const FCameraPredictionData& CameraData)
 {
-    // 더미 폰 위치/회전 적용
-    DummyPawn->SetActorLocation(CameraData.Location);
-    DummyPawn->SetActorRotation(CameraData.Rotation);
-
-    // 컨트롤러 회전도 동기화
-    if (APlayerController* DummyController = Cast<APlayerController>(DummyPawn->GetController()))
+    // 오직 클라에서 서버 캐릭터 예측에만 쓰이니..
+    for (TActorIterator<ACharacter> It(GetWorld()); It; ++It)
     {
-        DummyController->SetControlRotation(CameraData.Rotation);
+        ACharacter* TargetCharacter = *It;
+        if (!TargetCharacter || TargetCharacter->IsLocallyControlled())
+            continue;
+
+        // 피벗(더미 폰)을 타겟 위치로
+        const FVector Pivot = TargetCharacter->GetActorLocation(); // 필요시 머리 높이 보정
+        DummyPawn->SetActorLocation(Pivot);
+
+        // 컨트롤러 회전을 예측값으로 → 스프링암이 그 회전을 받아서 원궤도
+        if (APlayerController* DummyController = Cast<APlayerController>(DummyPawn->GetController()))
+        {
+            DummyController->SetControlRotation(CameraData.Rotation);
+        }
+        break;
     }
 
     // 카메라 FOV 적용
@@ -464,26 +474,13 @@ void ASSPlayerController::SetupInputComponent()
 void ASSPlayerController::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
-
-    // 더미 컨트롤러는 네트워크 동기화 안함
     if (bIsDummyController) return;
-
-    // 로컬 플레이어만 위치 정보를 서버로 전송
-    if (IsLocalController() && GetPawn())
-    {
-        TimeSinceLastUpdate += DeltaTime;
-        if (TimeSinceLastUpdate >= LocationUpdateInterval)
-        {
-            FVector PawnLocation = GetPawn()->GetActorLocation();
-            FRotator PawnRotation = GetPawn()->GetActorRotation();
-            ServerUpdatePlayerLocation(PawnLocation, PawnRotation);
-            TimeSinceLastUpdate = 0.0f;
-        }
-    }
 }
+
 
 void ASSPlayerController::ServerUpdatePlayerLocation_Implementation(FVector Location, FRotator Rotation)
 {
+    /*
     // 서버에서 다른 클라이언트들에게 위치 정보 전달
     ASSGameMode* SSGameMode = Cast<ASSGameMode>(GetWorld()->GetAuthGameMode());
     if (SSGameMode)
@@ -498,6 +495,7 @@ void ASSPlayerController::ServerUpdatePlayerLocation_Implementation(FVector Loca
             }
         }
     }
+    */
 }
 
 bool ASSPlayerController::ServerUpdatePlayerLocation_Validate(FVector Location, FRotator Rotation)
@@ -511,25 +509,3 @@ void ASSPlayerController::ClientReceiveRemotePlayerLocation_Implementation(FVect
     // UE_LOG(LogTemp, Log, TEXT("SS Received remote player location: %s"), *Location.ToString());
 }
 
-/*
-// 추가: PlayerController 정리 함수
-void ASSPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
-{
-    // 타이머 정리
-    if (GetWorldTimerManager().IsTimerActive(ClientSyncTimerHandle))
-    {
-        GetWorldTimerManager().ClearTimer(ClientSyncTimerHandle);
-        UE_LOG(LogTemp, Log, TEXT("SS Cleared sync timer for controller: %s"), *GetName());
-    }
-
-    // 더미 컨트롤러인 경우 추가 정리
-    if (bIsDummyController)
-    {
-        UE_LOG(LogTemp, Log, TEXT("SS Dummy controller %s ending play"), *GetName());
-    }
-
-    Super::EndPlay(EndPlayReason);
-}
-
-
-*/

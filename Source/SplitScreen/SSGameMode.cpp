@@ -1,19 +1,16 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
-
 #include "SSGameMode.h"
 #include "SSGameInstance.h"
 #include "SSDummySpectatorPawn.h"
 #include "SSPlayerController.h"
-#include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/PlatformMisc.h" // FPlatformUserId 사용을 위해 추가
 #include "TimerManager.h" // GetWorldTimerManager() 사용을 위해
 #include "SSCameraViewProxy.h"
-#include "Kismet/GameplayStatics.h"
-
+#include "Components/CapsuleComponent.h"
 
 ASSGameMode::ASSGameMode()
 {
@@ -44,10 +41,63 @@ void ASSGameMode::BeginPlay()
         }
     }
 }
+
 void ASSGameMode::PostLogin(APlayerController* NewPlayer)
 {
     Super::PostLogin(NewPlayer);
     ConnectedPlayers.AddUnique(NewPlayer);
+
+    // === 분리된 Proxy 시스템 ===
+
+    // 1) 클라이언트별 개별 Proxy 생성 (모든 원격 클라이언트용)
+    if (!NewPlayer->IsLocalController()) // 원격 클라이언트
+    {
+        FActorSpawnParameters ClientProxyParams;
+        ClientProxyParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+        ClientProxyParams.Owner = NewPlayer; // 클라이언트를 Owner로 설정
+
+        ASSCameraViewProxy* ClientProxy = GetWorld()->SpawnActor<ASSCameraViewProxy>(
+            ASSCameraViewProxy::StaticClass(),
+            FTransform::Identity,
+            ClientProxyParams
+        );
+
+        if (ClientProxy)
+        {
+            // 중요: 클라이언트에도 복제되도록 설정
+            ClientProxy->SetReplicates(true);
+            ClientProxy->SetReplicateMovement(false); // 카메라 데이터만 복제
+
+            // 클라이언트별 Proxy 맵에 추가
+            ClientCamProxies.Add(NewPlayer, ClientProxy);
+
+            UE_LOG(LogTemp, Warning, TEXT("SS Created ClientCamProxy for %s (Owner: %s)"),
+                *NewPlayer->GetName(), *ClientProxy->GetOwner()->GetName());
+        }
+    }
+
+    // 2) 서버 로컬 플레이어용 Proxy 생성 (한 번만)
+    if (NewPlayer->IsLocalController() && !ServerCamProxy)
+    {
+        FActorSpawnParameters ServerProxyParams;
+        ServerProxyParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+        // Owner를 설정하지 않음 - 서버 전용 Proxy
+
+        ServerCamProxy = GetWorld()->SpawnActor<ASSCameraViewProxy>(
+            ASSCameraViewProxy::StaticClass(),
+            FTransform::Identity,
+            ServerProxyParams
+        );
+
+        if (ServerCamProxy)
+        {
+            // 서버 Proxy도 복제되도록 설정
+            ServerCamProxy->SetReplicates(true);
+            ServerCamProxy->SetReplicateMovement(false);
+
+            UE_LOG(LogTemp, Warning, TEXT("SS Created ServerCamProxy (ListenServer POV, No Owner)"));
+        }
+    }
 
     FString NetModeString = GetWorld()->GetNetMode() == NM_ListenServer ? TEXT("ListenServer") : TEXT("Client");
     UE_LOG(LogTemp, Warning, TEXT("SS PostLogin: %s, LocalController: %s, Total: %d, NetMode: %s"),
@@ -83,58 +133,75 @@ void ASSGameMode::Logout(AController* Exiting)
 
 void ASSGameMode::SetupOnlineSplitScreen()
 {
-    USSGameInstance* SSGI = Cast<USSGameInstance>(GetGameInstance());
-    if (!SSGI || !SSGI->IsSplitScreenEnabled())
-    {
-        UE_LOG(LogTemp, Warning, TEXT("SS Split screen not enabled in game instance"));
-        return;
-    }
-
-    // 이미 완전히 설정되어 있으면 리턴
-    if (DummyPlayerController && DummySpectatorPawn &&
-        DummyPlayerController->GetLocalPlayer())
-    {
-        UE_LOG(LogTemp, Warning, TEXT("SS Split screen already fully setup"));
-        return;
-    }
-
-    UE_LOG(LogTemp, Warning, TEXT("SS Setting up online split screen..."));
+    UE_LOG(LogTemp, Warning, TEXT("SSGameMode::SetupOnlineSplitScreen called"));
 
     CreateDummyLocalPlayer();
-    UpdateSplitScreenLayout();
-
-    // 성공한 경우에만 동기화 시작
-    if (DummyPlayerController && DummySpectatorPawn)
+    // 원격 클라 찾기 → 더미 스펙테이터 붙이기
+    APlayerController* RemoteClient = nullptr;
+    for (APlayerController* PC : ConnectedPlayers)
     {
-        GetWorldTimerManager().SetTimer(
-            SyncTimerHandle,
-            [this]() { SyncDummyPlayerWithRemotePlayer(); },
-            0.0083f,
-            true
+        if (PC && !PC->IsLocalController())
+        {
+            RemoteClient = PC;
+            break;
+        }
+    }
+    AttachDummySpectatorToClient(RemoteClient);
+
+    // === 회전 동기화 타이머 시작 ===
+    GetWorldTimerManager().SetTimer(
+        RotationSyncTimerHandle,   // FTimerHandle 멤버변수 선언 필요
+        this,
+        &ASSGameMode::SyncDummyRotationWithProxy,
+        0.016f,   // 60fps 주기 (16ms)
+        true      // 반복
+    );
+
+    UE_LOG(LogTemp, Warning, TEXT("SS SetupOnlineSplitScreen completed - Using client camera directly"));
+}
+
+void ASSGameMode::AttachDummySpectatorToClient(APlayerController* RemoteClient)
+{
+    if (!RemoteClient || !RemoteClient->GetPawn())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: Remote client or pawn not valid"));
+        return;
+    }
+
+    APawn* ClientPawn = RemoteClient->GetPawn();
+    USkeletalMeshComponent* Mesh = ClientPawn->FindComponentByClass<USkeletalMeshComponent>();
+    if (!Mesh)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: Client pawn has no skeletal mesh"));
+        return;
+    }
+
+    if (!DummySpectatorPawn)
+    {
+        // 더미 폰 스폰
+        DummySpectatorPawn = GetWorld()->SpawnActor<ASSDummySpectatorPawn>(
+            DummySpectatorPawnClass,
+            FVector::ZeroVector,
+            FRotator::ZeroRotator
         );
-        UE_LOG(LogTemp, Warning, TEXT("SS Split screen setup completed successfully"));
-    }
-    else
-    {
-        UE_LOG(LogTemp, Error, TEXT("SS Split screen setup failed"));
     }
 
-    // 1) 프록시가 없으면 생성
-    if (!ServerCamProxy)
+    if (DummySpectatorPawn)
     {
-        FActorSpawnParameters Params;
-        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-        ServerCamProxy = GetWorld()->SpawnActor<ASSCameraViewProxy>(ASSCameraViewProxy::StaticClass(), FTransform::Identity, Params);
-        UE_LOG(LogTemp, Warning, TEXT("SS Created ServerCamProxy"));
-    }
+        // 클라 캐릭터 스켈레톤 소켓에 Attach
+        FAttachmentTransformRules AttachRules(EAttachmentRule::SnapToTarget, true);
+        DummySpectatorPawn->AttachToComponent(Mesh, AttachRules, FName("head"));
+        // "head" 대신 캐릭터 스켈레톤 소켓 이름 사용
 
-    // 2) 서버 로컬 플레이어(리슨 서버)의 카메라를 소스로 지정
-    if (ServerCamProxy && HasAuthority())
-    {
-        // 0번 인덱스 PC = 리슨서버의 화면
-        ServerCamProxy->SetSourceFromPlayerIndex(0);
+        // Pawn은 보이지 않게 설정
+        DummySpectatorPawn->SetActorHiddenInGame(true);
+        DummySpectatorPawn->SetActorEnableCollision(false);
+
+        UE_LOG(LogTemp, Warning, TEXT("SS DummySpectator attached to %s's skeleton"),
+            *ClientPawn->GetName());
     }
 }
+
 
 void ASSGameMode::CreateDummyLocalPlayer()
 {
@@ -166,7 +233,7 @@ void ASSGameMode::CreateDummyLocalPlayer()
     }
 
     // 더미 스펙테이터 폰 생성
-    FVector SpawnLocation = FVector(0, 0, 200);
+    FVector SpawnLocation = FVector(0, 0, 0);
     FRotator SpawnRotation = FRotator::ZeroRotator;
 
     DummySpectatorPawn = GetWorld()->SpawnActor<ASSDummySpectatorPawn>(
@@ -187,9 +254,7 @@ void ASSGameMode::CreateDummyLocalPlayer()
     {
         // 더미로 표시
         DummyPlayerController->SetAsDummyController(true);
-
         DummyPlayerController->SetPawn(nullptr);
-        
         DummyPlayerController->SetPlayer(DummyLocalPlayer);
         DummyPlayerController->Possess(DummySpectatorPawn);
 
@@ -197,70 +262,87 @@ void ASSGameMode::CreateDummyLocalPlayer()
     }
 }
 
-void ASSGameMode::SyncDummyPlayerWithRemotePlayer()
-{
-    if (!DummySpectatorPawn || ConnectedPlayers.Num() < 2) return;
 
-    // 원격 플레이어 찾기
-    APlayerController* RemotePlayer = nullptr;
-    for (int32 i = 1; i < ConnectedPlayers.Num(); i++)
+void ASSGameMode::SyncDummyRotationWithProxy()
+{
+    // 1. 원격 클라 찾기
+    APlayerController* RemoteClient = nullptr;
+    for (APlayerController* PC : ConnectedPlayers)
     {
-        if (ConnectedPlayers[i] && ConnectedPlayers[i] != DummyPlayerController)
+        if (PC && !PC->IsLocalController())
         {
-            RemotePlayer = ConnectedPlayers[i];
+            RemoteClient = PC;
             break;
         }
     }
-
-    if (!RemotePlayer || !RemotePlayer->GetPawn()) return;
-
-    APawn* RemotePawn = RemotePlayer->GetPawn();
-    UCameraComponent* RemoteCamera = RemotePawn->FindComponentByClass<UCameraComponent>();
-
-    if (RemoteCamera && DummySpectatorPawn->bSyncDirectlyToCamera)
+    if (!RemoteClient)
     {
-        // 목표 위치와 회전
-        FVector TargetLocation = RemoteCamera->GetComponentLocation();
-        FRotator TargetRotation = RemoteCamera->GetComponentRotation();
+        UE_LOG(LogTemp, Warning, TEXT("SS RemoteClient null"));
+        return;
+    }
 
-        // 현재 위치와 회전
-        FVector CurrentLocation = DummySpectatorPawn->GetActorLocation();
-        FRotator CurrentRotation = DummySpectatorPawn->GetActorRotation();
+    // 2. 해당 클라의 Proxy 가져오기
+    ASSCameraViewProxy** FoundProxy = ClientCamProxies.Find(RemoteClient);
+    if (!FoundProxy || !*FoundProxy)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS FoundProxy null"));
+        return;
+    }
 
-        // 보간 속도 (값이 클수록 빠르게 따라감)
-        float InterpSpeed = 35.0f; // 조정 가능
-        float RotationInterpSpeed = 45.0f; // 회전은 조금 더 느리게
+    ASSCameraViewProxy* ClientProxy = *FoundProxy;
+    const FRepCamInfo& RemoteClientCam = ClientProxy->GetReplicatedCamera();
 
-        // 거리 체크 - 너무 멀면 즉시 이동
-        float Distance = FVector::Dist(CurrentLocation, TargetLocation);
-        if (Distance > 500.0f) // 5미터 이상 차이나면 즉시 이동
+    if (!DummySpectatorPawn || !DummyPlayerController)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS DummySpectatorPawn or DummyPlayerController invalid"));
+        return;
+    }
+
+    // 3. 위치 동기화 (캐릭터 크기만큼 오프셋 적용)
+    APawn* ClientPawn = RemoteClient->GetPawn();
+    FVector TargetLoc = RemoteClientCam.Location; // 기본값: 클라 카메라 위치 그대로
+
+    if (ClientPawn)
+    {
+        // 3-1) 스켈레톤 "head" 소켓 기준
+        if (USkeletalMeshComponent* Mesh = ClientPawn->FindComponentByClass<USkeletalMeshComponent>())
         {
-            DummySpectatorPawn->SetActorLocation(TargetLocation);
-            DummySpectatorPawn->SetActorRotation(TargetRotation);
+            if (Mesh->DoesSocketExist(TEXT("camera_socket")))
+            {
+                TargetLoc = Mesh->GetSocketLocation(TEXT("camera_socket"));
+                // Socket이 없으면 기본으로 캐릭터의 중앙인듯. 
+            }
         }
         else
         {
-            // 부드럽게 보간
-            FVector NewLocation = FMath::VInterpTo(CurrentLocation, TargetLocation, GetWorld()->GetDeltaSeconds(), InterpSpeed);
-            FRotator NewRotation = FMath::RInterpTo(CurrentRotation, TargetRotation, GetWorld()->GetDeltaSeconds(), RotationInterpSpeed);
-
-            DummySpectatorPawn->SetActorLocation(NewLocation);
-            DummySpectatorPawn->SetActorRotation(NewRotation);
-        }
-
-        // 컨트롤러 회전도 보간
-        if (DummyPlayerController)
-        {
-            FRotator ControlRotation = RemotePlayer->GetControlRotation();
-            FRotator CurrentControlRotation = DummyPlayerController->GetControlRotation();
-            FRotator NewControlRotation = FMath::RInterpTo(CurrentControlRotation, ControlRotation, GetWorld()->GetDeltaSeconds(), RotationInterpSpeed);
-            DummyPlayerController->SetControlRotation(NewControlRotation);
+            UE_LOG(LogTemp, Warning, TEXT("SS no head socket "));
         }
     }
+
+    FVector NewLoc = FMath::VInterpTo(
+        DummySpectatorPawn->GetActorLocation(),
+        TargetLoc,
+        GetWorld()->GetDeltaSeconds(),
+        35.f // 보간 속도
+    );
+
+    DummySpectatorPawn->SetActorLocation(NewLoc);
+
+    // 4. 회전은 클라 입력값을 그대로 쓰거나 무시 (옵션)
+    //    여기서는 클라 카메라 회전 그대로 반영
+    FRotator TargetRot = RemoteClientCam.Rotation;
+    FRotator CurrentRot = DummyPlayerController->GetControlRotation();
+
+    FRotator NewRot = FMath::RInterpTo(
+        CurrentRot,
+        TargetRot,
+        GetWorld()->GetDeltaSeconds(),
+        45.f // 보간 속도
+    );
+
+    DummyPlayerController->SetControlRotation(NewRot);
+
+    UE_LOG(LogTemp, Verbose, TEXT("SS Server: Synced dummy location=%s, rotation=%s"),
+        *NewLoc.ToString(), *NewRot.ToString());
 }
 
-void ASSGameMode::UpdateSplitScreenLayout()
-{
-    // 뷰포트 레이아웃은 엔진이 자동으로 처리
-    UE_LOG(LogTemp, Warning, TEXT("SS Split Screen Layout Updated"));
-}

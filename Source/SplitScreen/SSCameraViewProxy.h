@@ -53,4 +53,8 @@ protected:
     UPROPERTY(Transient)
     TWeakObjectPtr<APlayerController> SourcePC;
 
+public:
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerUpdateClientCamera(const FRepCamInfo& NewCam);
+
 };
