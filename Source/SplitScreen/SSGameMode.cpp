@@ -207,7 +207,7 @@ void ASSGameMode::CreateDummyLocalPlayer()
     }
 
     // 더미 스펙테이터 폰 생성
-    FVector SpawnLocation = FVector(0, 0, 200);
+    FVector SpawnLocation = FVector(0, 0, 0);
     FRotator SpawnRotation = FRotator::ZeroRotator;
 
     DummySpectatorPawn = GetWorld()->SpawnActor<ASSDummySpectatorPawn>(
