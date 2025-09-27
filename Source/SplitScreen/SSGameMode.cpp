@@ -49,26 +49,7 @@ void ASSGameMode::PostLogin(APlayerController* NewPlayer)
     Super::PostLogin(NewPlayer);
     ConnectedPlayers.AddUnique(NewPlayer);
 
-    // *** 클라이언트가 접속했을 때만 클라이언트 전용 Proxy 생성 ***
-    if (!NewPlayer->IsLocalController()) // 원격 클라이언트
-    {
-        FActorSpawnParameters Params;
-        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-        Params.Owner = NewPlayer; // 클라이언트 전용 Proxy는 Owner를 클라이언트 PC로 설정
-
-        ASSCameraViewProxy* ClientProxy = GetWorld()->SpawnActor<ASSCameraViewProxy>(
-            ASSCameraViewProxy::StaticClass(),
-            FTransform::Identity,
-            Params
-        );
-
-        if (ClientProxy)
-        {
-            ClientCamProxies.Add(NewPlayer, ClientProxy);
-            UE_LOG(LogTemp, Warning, TEXT("SS Created ClientCamProxy for %s (Owner: %s)"),
-                *NewPlayer->GetName(), *ClientProxy->GetOwner()->GetName());
-        }
-    }
+    // 기존의 Proxy 생성 로직 제거 - 더이상 필요없음
 
     FString NetModeString = GetWorld()->GetNetMode() == NM_ListenServer ? TEXT("ListenServer") : TEXT("Client");
     UE_LOG(LogTemp, Warning, TEXT("SS PostLogin: %s, LocalController: %s, Total: %d, NetMode: %s"),
@@ -81,8 +62,8 @@ void ASSGameMode::PostLogin(APlayerController* NewPlayer)
     {
         if (GetWorld()->GetNetMode() == NM_ListenServer)
         {
-            // 정확히 2명일 때만 실행 (중복 방지)
-            if (ConnectedPlayers.Num() == 2 && !DummyPlayerController)
+            // 정확히 2명일 때만 실행
+            if (ConnectedPlayers.Num() == 2)
             {
                 UE_LOG(LogTemp, Warning, TEXT("SS Starting split screen setup..."));
                 SetupOnlineSplitScreen();
@@ -106,45 +87,73 @@ void ASSGameMode::SetupOnlineSplitScreen()
 {
     UE_LOG(LogTemp, Warning, TEXT("SSGameMode::SetupOnlineSplitScreen called"));
 
-    // *** 서버 전용 Proxy 생성 (Owner 없음) ***
-    if (!ServerCamProxy)
+    CreateDummyLocalPlayer();
+    // 원격 클라 찾기 → 더미 스펙테이터 붙이기
+    APlayerController* RemoteClient = nullptr;
+    for (APlayerController* PC : ConnectedPlayers)
     {
-        FActorSpawnParameters Params;
-        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-        // Owner를 설정하지 않음 - 서버 전용 Proxy
-
-        ServerCamProxy = GetWorld()->SpawnActor<ASSCameraViewProxy>(
-            ASSCameraViewProxy::StaticClass(),
-            FTransform::Identity,
-            Params
-        );
-
-        if (ServerCamProxy && HasAuthority())
+        if (PC && !PC->IsLocalController())
         {
-            ServerCamProxy->SetSourceFromPlayerIndex(0); // 리슨 서버 시점 (PlayerIndex 0)
-            UE_LOG(LogTemp, Warning, TEXT("SS Created ServerCamProxy (ListenServer POV, No Owner)"));
+            RemoteClient = PC;
+            break;
         }
     }
+    AttachDummySpectatorToClient(RemoteClient);
 
-    // 더미 플레이어/컨트롤러 생성
-    CreateDummyLocalPlayer();
+    // === 회전 동기화 타이머 시작 ===
+    GetWorldTimerManager().SetTimer(
+        RotationSyncTimerHandle,   // FTimerHandle 멤버변수 선언 필요
+        this,
+        &ASSGameMode::SyncDummyRotationWithProxy,
+        0.016f,   // 60fps 주기 (16ms)
+        true      // 반복
+    );
 
-    if (DummyPlayerController && DummySpectatorPawn)
+    UE_LOG(LogTemp, Warning, TEXT("SS SetupOnlineSplitScreen completed - Using client camera directly"));
+}
+
+void ASSGameMode::AttachDummySpectatorToClient(APlayerController* RemoteClient)
+{
+    if (!RemoteClient || !RemoteClient->GetPawn())
     {
-        GetWorldTimerManager().SetTimer(
-            SyncTimerHandle,
-            [this]() { SyncDummyPlayerWithRemotePlayer(); },
-            0.0083f,
-            true
-        );
-
-        UE_LOG(LogTemp, Warning, TEXT("SS SetupOnlineSplitScreen completed"));
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: Remote client or pawn not valid"));
+        return;
     }
-    else
+
+    APawn* ClientPawn = RemoteClient->GetPawn();
+    USkeletalMeshComponent* Mesh = ClientPawn->FindComponentByClass<USkeletalMeshComponent>();
+    if (!Mesh)
     {
-        UE_LOG(LogTemp, Error, TEXT("SS Failed to complete SetupOnlineSplitScreen"));
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: Client pawn has no skeletal mesh"));
+        return;
+    }
+
+    if (!DummySpectatorPawn)
+    {
+        // 더미 폰 스폰
+        DummySpectatorPawn = GetWorld()->SpawnActor<ASSDummySpectatorPawn>(
+            DummySpectatorPawnClass,
+            FVector::ZeroVector,
+            FRotator::ZeroRotator
+        );
+    }
+
+    if (DummySpectatorPawn)
+    {
+        // 클라 캐릭터 스켈레톤 소켓에 Attach
+        FAttachmentTransformRules AttachRules(EAttachmentRule::SnapToTarget, true);
+        DummySpectatorPawn->AttachToComponent(Mesh, AttachRules, FName("head"));
+        // "head" 대신 캐릭터 스켈레톤 소켓 이름 사용
+
+        // Pawn은 보이지 않게 설정
+        DummySpectatorPawn->SetActorHiddenInGame(true);
+        DummySpectatorPawn->SetActorEnableCollision(false);
+
+        UE_LOG(LogTemp, Warning, TEXT("SS DummySpectator attached to %s's skeleton"),
+            *ClientPawn->GetName());
     }
 }
+
 
 void ASSGameMode::CreateDummyLocalPlayer()
 {
@@ -197,15 +206,273 @@ void ASSGameMode::CreateDummyLocalPlayer()
     {
         // 더미로 표시
         DummyPlayerController->SetAsDummyController(true);
-
         DummyPlayerController->SetPawn(nullptr);
-
         DummyPlayerController->SetPlayer(DummyLocalPlayer);
         DummyPlayerController->Possess(DummySpectatorPawn);
 
         UE_LOG(LogTemp, Warning, TEXT("SS Dummy Local Player Created Successfully"));
     }
 }
+
+void ASSGameMode::SyncDummyRotationWithProxy()
+{
+    if (!DummySpectatorPawn || !DummyPlayerController)
+        return;
+
+    // 1. 원격 클라 찾기
+    APlayerController* RemoteClient = nullptr;
+    for (APlayerController* PC : ConnectedPlayers)
+    {
+        if (PC && !PC->IsLocalController())
+        {
+            RemoteClient = PC;
+            break;
+        }
+    }
+    if (!RemoteClient)
+        return;
+
+    // 2. 해당 클라의 Proxy 가져오기
+    ASSCameraViewProxy** FoundProxy = ClientCamProxies.Find(RemoteClient);
+    if (!FoundProxy || !*FoundProxy)
+        return;
+
+    ASSCameraViewProxy* ClientProxy = *FoundProxy;
+    const FRepCamInfo& RemoteClientCam = ClientProxy->GetReplicatedCamera();
+
+    // 3. 회전만 동기화
+    FRotator TargetRot = RemoteClientCam.Rotation;
+    FRotator CurrentRot = DummyPlayerController->GetControlRotation();
+
+    // 부드럽게 보간
+    FRotator NewRot = FMath::RInterpTo(
+        CurrentRot,
+        TargetRot,
+        GetWorld()->GetDeltaSeconds(),
+        45.f // 보간 속도
+    );
+
+    DummyPlayerController->SetControlRotation(NewRot);
+
+    UE_LOG(LogTemp, Verbose, TEXT("SS Server: Synced dummy rotation -> %s"), *NewRot.ToString());
+}
+
+
+
+
+///////////////////////////////////////////////////////////////////
+
+
+void ASSGameMode::SetClientCameraAsSecondView()
+{
+    // 1. 원격 클라이언트 찾기
+    APlayerController* RemoteClient = nullptr;
+    for (APlayerController* PC : ConnectedPlayers)
+    {
+        if (PC && !PC->IsLocalController())
+        {
+            RemoteClient = PC;
+            break;
+        }
+    }
+
+    if (!RemoteClient || !RemoteClient->GetPawn())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: No remote client pawn found"));
+        return;
+    }
+
+    APawn* ClientPawn = RemoteClient->GetPawn();
+
+    // 2. Pawn에서 카메라 찾기
+    UCameraComponent* ClientCamera = ClientPawn->FindComponentByClass<UCameraComponent>();
+    if (!ClientCamera)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: Client pawn has no camera"));
+        return;
+    }
+
+    UGameInstance* GameInstance = GetGameInstance();
+    if (!GameInstance) return;
+
+    // 3. 두 번째 로컬 플레이어 확보
+    ULocalPlayer* SecondPlayer = GameInstance->GetLocalPlayerByIndex(1);
+    if (!SecondPlayer)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: No second local player"));
+        return;
+    }
+
+    // 4. 두 번째 컨트롤러 생성 (없을 경우)
+    if (!SecondPlayer->PlayerController)
+    {
+        APlayerController* SecondPC = GetWorld()->SpawnActor<APlayerController>();
+        SecondPC->SetPlayer(SecondPlayer);
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: Created controller for second player"));
+    }
+
+    // 5. 두 번째 뷰포트 → 클라 Pawn 카메라로 전환
+    if (APlayerController* SecondPC = SecondPlayer->PlayerController)
+    {
+        FViewTargetTransitionParams TransitionParams;
+        SecondPC->SetViewTarget(ClientPawn, TransitionParams); // Pawn에 붙은 CameraComponent 사용
+
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: Second viewport now uses remote client camera"));
+    }
+}
+
+
+
+void ASSGameMode::CreateSimpleDummyLocalPlayer()
+{
+    UGameInstance* GameInstance = GetGameInstance();
+    if (!GameInstance) return;
+
+    // 현재 로컬 플레이어 수 확인
+    int32 CurrentLocalPlayers = GameInstance->GetNumLocalPlayers();
+
+    if (CurrentLocalPlayers >= 2)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS Already have 2+ local players"));
+        return;
+    }
+
+    // 더미 로컬 플레이어 생성 (폰/컨트롤러 없이)
+    FPlatformUserId DummyUserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(1);
+    FString OutError;
+    ULocalPlayer* DummyLocalPlayer = GameInstance->CreateLocalPlayer(DummyUserId, OutError, false);
+
+    if (DummyLocalPlayer)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS Success to create dummy local player (no pawn)"));
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("SS Failed to create dummy local player"));
+    }
+}
+
+void ASSGameMode::AttachCameraToRemoteClient()
+{
+    // 원격 클라이언트 찾기
+    APlayerController* RemoteClient = nullptr;
+    for (APlayerController* PC : ConnectedPlayers)
+    {
+        if (PC && !PC->IsLocalController())
+        {
+            RemoteClient = PC;
+            break;
+        }
+    }
+
+    if (!RemoteClient || !RemoteClient->GetPawn())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: No remote client or pawn found"));
+        return;
+    }
+
+    APawn* ClientPawn = RemoteClient->GetPawn();
+    USkeletalMeshComponent* ClientMesh = ClientPawn->FindComponentByClass<USkeletalMeshComponent>();
+
+    if (!ClientMesh)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: No SkeletalMesh found in client pawn"));
+        return;
+    }
+
+    // 이미 카메라가 있는지 확인
+    if (AttachedServerCamera)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: Camera already attached"));
+        return;
+    }
+
+    // 새 카메라 컴포넌트 생성
+    AttachedServerCamera = NewObject<UCameraComponent>(ClientPawn, UCameraComponent::StaticClass(), TEXT("ServerViewCamera"));
+
+    // 머리 소켓에 붙이기
+    FName HeadSocket = TEXT("head");
+    if (ClientMesh->DoesSocketExist(HeadSocket))
+    {
+        AttachedServerCamera->SetupAttachment(ClientMesh, HeadSocket);
+    }
+    else
+    {
+        AttachedServerCamera->SetupAttachment(ClientMesh);
+        AttachedServerCamera->SetRelativeLocation(FVector(0, 0, 160)); // 머리 높이
+    }
+
+    // 카메라 설정 - 회전 동기화 완전 제거!
+    AttachedServerCamera->SetFieldOfView(90.0f);
+    AttachedServerCamera->bUsePawnControlRotation = false; // 중요: 컨트롤러 회전 사용 안함
+    AttachedServerCamera->bAutoActivate = true;
+
+    // 컴포넌트 등록
+    AttachedServerCamera->RegisterComponent();
+
+    // 두 번째 뷰포트 설정
+    UGameInstance* GameInstance = GetGameInstance();
+    if (GameInstance)
+    {
+        ULocalPlayer* SecondPlayer = GameInstance->GetLocalPlayerByIndex(1);
+        if (SecondPlayer)
+        {
+            // 두 번째 플레이어용 컨트롤러 생성/설정
+            if (!SecondPlayer->PlayerController)
+            {
+                APlayerController* SecondPC = GetWorld()->SpawnActor<APlayerController>();
+                SecondPC->SetPlayer(SecondPlayer);
+            }
+
+            // 클라이언트 캐릭터를 직접 뷰 타겟으로 설정
+            if (APlayerController* SecondPC = SecondPlayer->PlayerController)
+            {
+                SecondPC->SetViewTarget(ClientPawn); // 클라이언트 캐릭터를 직접 타겟팅
+
+                UE_LOG(LogTemp, Warning, TEXT("SS Server: Second viewport set to client character with attached camera"));
+            }
+        }
+    }
+
+    UE_LOG(LogTemp, Warning, TEXT("SS Server: Camera attached to client character without rotation sync"));
+}
+
+// 이 밑으로 안씀 
+
+
+void ASSGameMode::SetSecondViewportCamera(UCameraComponent* Camera)
+{
+    if (!Camera) return;
+
+    UGameInstance* GameInstance = GetGameInstance();
+    if (!GameInstance) return;
+
+    // 두 번째 로컬 플레이어 가져오기
+    ULocalPlayer* SecondPlayer = GameInstance->GetLocalPlayerByIndex(1);
+    if (!SecondPlayer) return;
+
+    // 두 번째 플레이어용 컨트롤러 생성 (없는 경우에만)
+    if (!SecondPlayer->PlayerController)
+    {
+        APlayerController* SecondPC = GetWorld()->SpawnActor<APlayerController>();
+        SecondPC->SetPlayer(SecondPlayer);
+
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: Created controller for second player"));
+    }
+
+    if (APlayerController* SecondPC = SecondPlayer->PlayerController)
+    {
+        // 클라이언트 캐릭터를 직접 뷰 타겟으로 설정
+        // 이렇게 하면 붙인 카메라가 자동으로 사용됨
+        SecondPC->SetViewTarget(Camera->GetOwner());
+
+        UE_LOG(LogTemp, Warning, TEXT("SS Server: Second viewport now views client character directly"));
+    }
+}
+
+
+// 아래로는 사용안함 
+
 
 void ASSGameMode::SyncDummyPlayerWithRemotePlayer()
 {

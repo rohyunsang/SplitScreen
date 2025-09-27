@@ -31,13 +31,28 @@ public:
     TSubclassOf<APawn> DummySpectatorPawnClass;
 
     UPROPERTY() // GC 보호
-        class ASSCameraViewProxy* ServerCamProxy = nullptr;
+    class ASSCameraViewProxy* ServerCamProxy = nullptr;
 
     UPROPERTY()
     TMap<APlayerController*, ASSCameraViewProxy*> ClientCamProxies;
 
     UPROPERTY()
     TMap<APlayerController*, ASSDummySpectatorPawn*> ClientSpectatorPawns;
+
+    // SSGameMode.h
+    UPROPERTY()
+    UCameraComponent* AttachedServerCamera;
+
+    UPROPERTY()
+    APawn* DummyViewTargetPawn;
+    
+
+    void CreateSimpleDummyLocalPlayer();
+    void AttachCameraToRemoteClient();
+    void SetSecondViewportCamera(UCameraComponent* Camera);
+    void SetClientCameraAsSecondView();
+    void AttachDummySpectatorToClient(APlayerController* RemoteClient);
+    void SyncDummyRotationWithProxy();
 
 protected:
     UFUNCTION(BlueprintCallable, Category = "Split Screen")
@@ -55,6 +70,7 @@ private:
     void SyncDummyPlayerWithRemotePlayer();
 
     FTimerHandle SyncTimerHandle;
+    FTimerHandle RotationSyncTimerHandle;
 
     // === 카메라 예측 시스템 (서버용) ===
 
