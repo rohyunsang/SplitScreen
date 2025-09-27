@@ -242,7 +242,7 @@ void ASSPlayerController::StartClientDummySync(ASSDummySpectatorPawn* DummyPawn)
         {
             SyncClientDummyWithRemotePlayer(DummyPawn);
         },
-        0.016f,
+        0.0083f,
         true
     );
 }
