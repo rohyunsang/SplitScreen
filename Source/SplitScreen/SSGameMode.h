@@ -6,9 +6,18 @@
 #include "GameFramework/GameModeBase.h"
 #include "SSDummySpectatorPawn.h"
 #include "SSPlayerController.h"
+#include "SSCameraViewProxy.h"
 #include "SSGameMode.generated.h"
 
 struct FCameraPredictionData;
+
+USTRUCT()
+struct FBufferedCamFrame
+{
+    GENERATED_BODY()
+    FRepCamInfo Data;
+    float Timestamp;
+};
 
 /**
  * 
@@ -23,6 +32,12 @@ public:
     virtual void BeginPlay() override;
     virtual void PostLogin(APlayerController* NewPlayer) override;
     virtual void Logout(AController* Exiting) override;
+
+    // 클라에서 카메라 프레임 추가
+    void BufferClientCameraFrame(APlayerController* RemotePC, const FRepCamInfo& NewFrame);
+
+    // 지연 보간된 프레임 가져오기
+    bool GetBufferedClientCamera(APlayerController* RemotePC, FRepCamInfo& OutFrame);
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Split Screen")
     bool bAutoEnableSplitScreen = true;
@@ -46,10 +61,23 @@ protected:
     UFUNCTION(BlueprintCallable, Category = "Split Screen")
     void UpdateSplitScreenLayout();
 
-private:
+protected:
+    // 버퍼
+    TMap<APlayerController*, TArray<FBufferedCamFrame>> ClientCamBuffers;
+
+    // ms 딜레이
+    float InterpDelay = 0.05f;
+
+    // Dummy
+    class ASSDummySpectatorPawn* DummySpectatorPawn = nullptr;
+    class ASSPlayerController* DummyPlayerController = nullptr;
+
+    // Connected Players
     TArray<APlayerController*> ConnectedPlayers;
-    class ASSDummySpectatorPawn* DummySpectatorPawn;
-    class ASSPlayerController* DummyPlayerController;
+
+private:
+
+
 
     void CreateDummyLocalPlayer();
     void SyncDummyPlayerWithRemotePlayer();
@@ -95,5 +123,10 @@ private:
     // 디버그용 함수
     UFUNCTION(BlueprintCallable, Category = "Debug")
     void DebugServerCameraPrediction();
+
+//
+        // === 카메라 Proxy 관련 ===
+    UFUNCTION()
+    void SpawnAndAttachCameraProxy(APlayerController* OwnerPC, APawn* OwnerPawn);
 
 };

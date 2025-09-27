@@ -17,6 +17,41 @@ void ASSPlayerController::BeginPlay()
 {
     Super::BeginPlay();
 
+    if (IsLocalController() && GetNetMode() == NM_ListenServer) // 서버에서만
+    {
+        UGameInstance* GI = GetGameInstance();
+        if (!GI) return;
+
+        // 이미 분할 화면 되어있지 않으면 새 로컬 플레이어 생성
+        if (GI->GetNumLocalPlayers() < 2)
+        {
+            FString OutError;
+            ULocalPlayer* SecondPlayer = GI->CreateLocalPlayer(1, OutError, false);
+            if (SecondPlayer)
+            {
+                APlayerController* SecondPC = SecondPlayer->PlayerController;
+                if (SecondPC)
+                {
+                    // 잠시 딜레이 후 원격 Pawn을 찾아서 ViewTarget으로 설정
+                    FTimerHandle Timer;
+                    GetWorld()->GetTimerManager().SetTimer(Timer, [this, SecondPC]()
+                        {
+                            for (TActorIterator<APawn> It(GetWorld()); It; ++It)
+                            {
+                                APawn* Pawn = *It;
+                                if (Pawn && !Pawn->IsLocallyControlled()) // 자기 아닌 다른 클라 Pawn
+                                {
+                                    SecondPC->SetViewTarget(Pawn);
+                                    UE_LOG(LogTemp, Warning, TEXT("Second viewport is now viewing remote pawn: %s"), *Pawn->GetName());
+                                    return;
+                                }
+                            }
+                        }, 2.0f, false); // 클라 Pawn 스폰 기다리려고 2초 딜레이
+                }
+            }
+        }
+    }
+
     if (!bIsDummyController)
     {
         UE_LOG(LogTemp, Warning, TEXT("SS Player Controller Started - IsLocalController: %s"),

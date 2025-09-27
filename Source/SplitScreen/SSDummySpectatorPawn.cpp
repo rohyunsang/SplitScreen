@@ -57,7 +57,7 @@ void ASSDummySpectatorPawn::BeginPlay()
 
     if (GetNetMode() == NM_DedicatedServer || GetNetMode() == NM_ListenServer)
     {
-        CameraBoom->TargetArmLength = 400.f;
+        CameraBoom->TargetArmLength = 0.f;
     }
     else
     {

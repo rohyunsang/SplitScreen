@@ -5,6 +5,7 @@
 #include "Net/UnrealNetwork.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerController.h"
+#include "SSGameMode.h"
 // #include "GameFramework/PlayerCameraManager.h"
 
 ASSCameraViewProxy::ASSCameraViewProxy()
@@ -13,7 +14,8 @@ ASSCameraViewProxy::ASSCameraViewProxy()
 
     bReplicates = true;
     bAlwaysRelevant = true;   // 어디서나 항상 관련
-    NetUpdateFrequency = 120.f;   // 필요 시 조정
+    // NetUpdateFrequency = 30.f;   // 필요 시 조정
+    SetNetUpdateFrequency(30.f);
     SetReplicateMovement(false); // 우리는 위치/회전을 액터 위치로 안 쓰고, RepCam만 복제
 
 #if WITH_EDITOR
@@ -59,39 +61,17 @@ void ASSCameraViewProxy::Tick(float DeltaSeconds)
 
     if (HasAuthority())
     {
-        // *** 서버: Owner가 설정된 경우 (클라이언트 전용 Proxy) ***
         if (APlayerController* OwnerPC = Cast<APlayerController>(GetOwner()))
         {
-            // 이 Proxy는 특정 클라이언트 전용이므로 
-            // 클라이언트가 RPC로 보낸 데이터만 복제하고, 서버에서 임의로 업데이트하지 않음
-            // RepCam은 ServerUpdateClientCamera에서만 업데이트됨
-
-            UE_LOG(LogTemp, VeryVerbose, TEXT("SS Server: Client Proxy for %s - RepCam: %s"),
-                *OwnerPC->GetName(), *RepCam.Rotation.ToString());
-        }
-        // *** 서버: Owner가 없는 경우 (서버 전용 Proxy) ***
-        else
-        {
-            // 서버 전용 Proxy - 리슨 서버(PlayerIndex 0)의 카메라 POV를 복제
-            APlayerController* PC = SourcePC.Get();
-            if (!PC)
+            if (APawn* P = OwnerPC->GetPawn())
             {
-                if (UWorld* World = GetWorld())
-                {
-                    PC = UGameplayStatics::GetPlayerController(World, 0);
-                    SourcePC = PC;
-                }
-            }
+                // 여기서 SpringArm 스타일 offset 적용
+                FVector CameraLoc = P->GetActorLocation() + FVector(-200, 0, 80);
+                FRotator CameraRot = OwnerPC->GetControlRotation();
 
-            if (PC && PC->PlayerCameraManager)
-            {
-                const FMinimalViewInfo POV = PC->PlayerCameraManager->GetCameraCacheView();
-                RepCam.Location = POV.Location;
-                RepCam.Rotation = POV.Rotation;
-                RepCam.FOV = POV.FOV;
-
-                UE_LOG(LogTemp, VeryVerbose, TEXT("SS Server: Server Proxy - RepCam: %s"),
-                    *RepCam.Rotation.ToString());
+                RepCam.Location = CameraLoc;
+                RepCam.Rotation = CameraRot;
+                RepCam.FOV = 90.f;
             }
         }
     }
@@ -103,16 +83,13 @@ void ASSCameraViewProxy::Tick(float DeltaSeconds)
             if (PC->IsLocalController() && PC->PlayerCameraManager)
             {
                 const FMinimalViewInfo POV = PC->PlayerCameraManager->GetCameraCacheView();
+                FVector LocalOffset = PC->GetPawn()->GetActorTransform().InverseTransformPosition(POV.Location);
                 FRepCamInfo LocalCam;
-                LocalCam.Location = POV.Location;
-                LocalCam.Rotation = POV.Rotation;
+                LocalCam.Location = LocalOffset;          // 로컬 오프셋 저장
+                LocalCam.Rotation = POV.Rotation;         // 회전은 그대로
                 LocalCam.FOV = POV.FOV;
 
-                // RPC → 서버에 전달 (이 클라이언트의 카메라 정보)
                 ServerUpdateClientCamera(LocalCam);
-
-                UE_LOG(LogTemp, VeryVerbose, TEXT("SS Client: Sending camera rotation: %s"),
-                    *LocalCam.Rotation.ToString());
             }
         }
     }
@@ -121,25 +98,21 @@ void ASSCameraViewProxy::Tick(float DeltaSeconds)
 // client -> server 
 void ASSCameraViewProxy::ServerUpdateClientCamera_Implementation(const FRepCamInfo& NewCam)
 {
-    // Owner 체크: 이 Proxy의 Owner 클라이언트만 업데이트 가능
     if (APlayerController* OwningPC = Cast<APlayerController>(GetOwner()))
     {
-        // Owner가 RPC를 보낸 클라이언트와 일치하는지 확인
         if (OwningPC == GetNetConnection()->PlayerController)
         {
             RepCam = NewCam;
-            UE_LOG(LogTemp, VeryVerbose, TEXT("SS Server: Updated client camera for %s - Rotation: %s"),
-                *OwningPC->GetName(), *RepCam.Rotation.ToString());
+
+            // GameMode 버퍼에 기록
+            if (UWorld* World = GetWorld())
+            {
+                if (ASSGameMode* GM = Cast<ASSGameMode>(World->GetAuthGameMode()))
+                {
+                    GM->BufferClientCameraFrame(OwningPC, RepCam);
+                }
+            }
         }
-        else
-        {
-            UE_LOG(LogTemp, Warning, TEXT("SS Server: Camera update from wrong client!"));
-        }
-    }
-    else
-    {
-        // Owner가 없는 서버 전용 Proxy는 클라이언트 RPC를 받으면 안됨
-        UE_LOG(LogTemp, Warning, TEXT("SS Server: Received client camera update on server-only proxy!"));
     }
 }
 
