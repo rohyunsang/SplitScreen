@@ -49,7 +49,27 @@ void ASSGameMode::PostLogin(APlayerController* NewPlayer)
     Super::PostLogin(NewPlayer);
     ConnectedPlayers.AddUnique(NewPlayer);
 
-    // 기존의 Proxy 생성 로직 제거 - 더이상 필요없음
+    // Proxy 생성 (서버에서만)
+    if (HasAuthority() && !NewPlayer->IsLocalController())
+    {
+        FActorSpawnParameters Params;
+        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+        Params.Owner = NewPlayer; // 반드시 Owner를 해당 클라의 PlayerController로 설정
+
+        ASSCameraViewProxy* NewProxy = GetWorld()->SpawnActor<ASSCameraViewProxy>(
+            ASSCameraViewProxy::StaticClass(),
+            FVector::ZeroVector,
+            FRotator::ZeroRotator,
+            Params
+        );
+
+        if (NewProxy)
+        {
+            ClientCamProxies.Add(NewPlayer, NewProxy);
+            UE_LOG(LogTemp, Warning, TEXT("SS Proxy created for %s (Owner = %s)"),
+                *NewPlayer->GetName(), *NewProxy->GetOwner()->GetName());
+        }
+    }
 
     FString NetModeString = GetWorld()->GetNetMode() == NM_ListenServer ? TEXT("ListenServer") : TEXT("Client");
     UE_LOG(LogTemp, Warning, TEXT("SS PostLogin: %s, LocalController: %s, Total: %d, NetMode: %s"),
@@ -57,6 +77,8 @@ void ASSGameMode::PostLogin(APlayerController* NewPlayer)
         NewPlayer->IsLocalController() ? TEXT("Yes") : TEXT("No"),
         ConnectedPlayers.Num(),
         *NetModeString);
+
+
 
     if (bAutoEnableSplitScreen)
     {
@@ -216,8 +238,7 @@ void ASSGameMode::CreateDummyLocalPlayer()
 
 void ASSGameMode::SyncDummyRotationWithProxy()
 {
-    if (!DummySpectatorPawn || !DummyPlayerController)
-        return;
+    UE_LOG(LogTemp, Warning, TEXT("SS SyncDummyRotationWithProxy called"));
 
     // 1. 원격 클라 찾기
     APlayerController* RemoteClient = nullptr;
@@ -230,12 +251,18 @@ void ASSGameMode::SyncDummyRotationWithProxy()
         }
     }
     if (!RemoteClient)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS RemoteClient null"));
         return;
+    }
 
     // 2. 해당 클라의 Proxy 가져오기
     ASSCameraViewProxy** FoundProxy = ClientCamProxies.Find(RemoteClient);
     if (!FoundProxy || !*FoundProxy)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SS FoundProxy null"));
         return;
+    }
 
     ASSCameraViewProxy* ClientProxy = *FoundProxy;
     const FRepCamInfo& RemoteClientCam = ClientProxy->GetReplicatedCamera();
@@ -261,6 +288,7 @@ void ASSGameMode::SyncDummyRotationWithProxy()
 
 
 ///////////////////////////////////////////////////////////////////
+// 이 밑으론 사용안함. 
 
 
 void ASSGameMode::SetClientCameraAsSecondView()
