@@ -474,30 +474,13 @@ void ASSPlayerController::SetupInputComponent()
 void ASSPlayerController::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
-
-    // 더미 컨트롤러는 네트워크 동기화 안함
     if (bIsDummyController) return;
-
-    /*
-    // 로컬 플레이어만 위치 정보를 서버로 전송
-    if (IsLocalController() && GetPawn())
-    {
-        TimeSinceLastUpdate += DeltaTime;
-        if (TimeSinceLastUpdate >= LocationUpdateInterval)
-        {
-            FVector PawnLocation = GetPawn()->GetActorLocation();
-            FRotator PawnRotation = GetPawn()->GetActorRotation();
-            ServerUpdatePlayerLocation(PawnLocation, PawnRotation);
-            TimeSinceLastUpdate = 0.0f;
-        }
-    }
-
-    */
 }
 
 
 void ASSPlayerController::ServerUpdatePlayerLocation_Implementation(FVector Location, FRotator Rotation)
 {
+    /*
     // 서버에서 다른 클라이언트들에게 위치 정보 전달
     ASSGameMode* SSGameMode = Cast<ASSGameMode>(GetWorld()->GetAuthGameMode());
     if (SSGameMode)
@@ -512,6 +495,7 @@ void ASSPlayerController::ServerUpdatePlayerLocation_Implementation(FVector Loca
             }
         }
     }
+    */
 }
 
 bool ASSPlayerController::ServerUpdatePlayerLocation_Validate(FVector Location, FRotator Rotation)
@@ -525,25 +509,3 @@ void ASSPlayerController::ClientReceiveRemotePlayerLocation_Implementation(FVect
     // UE_LOG(LogTemp, Log, TEXT("SS Received remote player location: %s"), *Location.ToString());
 }
 
-/*
-// 추가: PlayerController 정리 함수
-void ASSPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
-{
-    // 타이머 정리
-    if (GetWorldTimerManager().IsTimerActive(ClientSyncTimerHandle))
-    {
-        GetWorldTimerManager().ClearTimer(ClientSyncTimerHandle);
-        UE_LOG(LogTemp, Log, TEXT("SS Cleared sync timer for controller: %s"), *GetName());
-    }
-
-    // 더미 컨트롤러인 경우 추가 정리
-    if (bIsDummyController)
-    {
-        UE_LOG(LogTemp, Log, TEXT("SS Dummy controller %s ending play"), *GetName());
-    }
-
-    Super::EndPlay(EndPlayReason);
-}
-
-
-*/
