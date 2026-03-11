@@ -10,6 +10,6 @@ public class SplitScreen : ModuleRules
 
         // PublicIncludePaths.AddRange(new string[] { "SplitScreen" });
 
-        PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput" });
+        PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "DynamicSplitScreen" });
 	}
 }

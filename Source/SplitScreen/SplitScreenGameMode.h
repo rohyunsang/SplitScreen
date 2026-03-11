@@ -22,6 +22,25 @@ class ASplitScreenGameMode : public AGameModeBase
 
 public:
 	ASplitScreenGameMode();
+
+protected:
+	virtual void BeginPlay() override;
+	virtual void PostLogin(APlayerController* NewPlayer) override;
+
+private:
+	void AttachDummySpectatorToClient(APlayerController* RemoteClient);
+	void SyncDummyWithRemoteClient();
+
+	UPROPERTY()
+	class ASplitScreenSpectatorPawn* DummySpectatorPawn;
+
+	UPROPERTY()
+	APlayerController* DummyPlayerController;
+
+	UPROPERTY()
+	APlayerController* CachedRemoteClient;
+
+	FTimerHandle SyncTimerHandle;
 };
 
 
