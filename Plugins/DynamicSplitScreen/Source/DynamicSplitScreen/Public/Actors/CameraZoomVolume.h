@@ -32,27 +32,27 @@ protected:
 	void OnTriggerEndOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex);
 
 protected:
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera Zoom Volume")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Default|Camera Zoom Volume")
 	TObjectPtr<UBoxComponent> TriggerBox;
 
 	/** Target SpringArm length inside the volume. Smaller = zoom in, Larger = zoom out. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera Zoom Volume")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume")
 	float TargetArmLength = 200.f;
 
 	/** How fast the zoom interpolates (higher = snappier). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera Zoom Volume")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume")
 	float ZoomInterpSpeed = 5.f;
 
 	/** If true, merges split screen into one viewport when both players are inside. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera Zoom Volume|Split Screen")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen")
 	bool bMergeWhenBothInside = false;
 
 	/** Which player's view to show when merged (0 = Player 1, 1 = Player 2). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera Zoom Volume|Split Screen", meta = (EditCondition = "bMergeWhenBothInside", ClampMin = "0", ClampMax = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen", meta = (EditCondition = "bMergeWhenBothInside", ClampMin = "0", ClampMax = "1"))
 	int32 MergedPlayerIndex = 0;
 
 	/** If true, uses the entering player's index instead of MergedPlayerIndex. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera Zoom Volume|Split Screen", meta = (EditCondition = "bMergeWhenBothInside"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen", meta = (EditCondition = "bMergeWhenBothInside"))
 	bool bMergeToEnteringPlayer = false;
 
 private:
