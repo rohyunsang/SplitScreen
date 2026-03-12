@@ -7,6 +7,7 @@
 #include "SplitScreenMergeVolume.generated.h"
 
 class UBoxComponent;
+class ACharacter;
 
 /**
  * Volume that merges the split screen into a single viewport when the required number

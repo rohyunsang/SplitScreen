@@ -5,6 +5,7 @@
 #include "Controllers/DynamicSplitScreenPlayerController.h"
 #include "Subsystem/DynamicSplitScreenSubsystem.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
 #include "Components/SkeletalMeshComponent.h"

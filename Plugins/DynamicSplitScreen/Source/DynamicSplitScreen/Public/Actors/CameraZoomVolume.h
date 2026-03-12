@@ -7,6 +7,7 @@
 #include "CameraZoomVolume.generated.h"
 
 class UBoxComponent;
+class ACharacter;
 
 /**
  * Volume that smoothly adjusts the camera zoom (SpringArm length) when a character enters.

@@ -7,6 +7,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "Subsystem/DynamicSplitScreenSubsystem.h"
 
 // ─── AFollowCameraActor ───────────────────────────────────────
