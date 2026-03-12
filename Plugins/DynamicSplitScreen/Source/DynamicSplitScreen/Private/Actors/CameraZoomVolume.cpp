@@ -53,7 +53,7 @@ void ACameraZoomVolume::Tick(float DeltaSeconds)
 		);
 	}
 
-	// 복원 완료된 캐릭터(볼륨 밖) 정리
+	// Clean up characters outside the volume that have finished restoring
 	for (auto It = ZoomStates.CreateIterator(); It; ++It)
 	{
 		ACharacter* Character = It->Key;

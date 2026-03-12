@@ -198,7 +198,7 @@ void ADynamicSplitScreenPlayerController::AttachDummySpectatorToRemoteCharacter(
 	{
 		ACharacter* Char = *It;
 		if (!Char || Char->IsLocallyControlled()) continue;
-		if (!Char->GetPlayerState()) continue; // PlayerState는 클라이언트에도 복제됨
+		if (!Char->GetPlayerState()) continue; // PlayerState is replicated to all clients
 		RemoteChar = Char;
 		break;
 	}
@@ -260,7 +260,7 @@ FRotator ADynamicSplitScreenPlayerController::GetRemoteCharacterCameraRotation(A
 	{
 		return DSChar->GetReplicatedCameraRotation();
 	}
-	// 폴백: 플러그인 캐릭터를 상속하지 않은 경우 내장 복제값 사용
+	// Fallback: use built-in replicated value if the character does not inherit from the plugin character
 	return RemoteChar->GetBaseAimRotation();
 }
 
