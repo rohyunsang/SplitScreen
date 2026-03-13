@@ -29,12 +29,18 @@ void AFollowCameraActor::InitFollow(ACharacter* InTarget, const FVector& InOffse
 
 	if (TargetCharacter)
 	{
+		const float CharYaw = TargetCharacter->GetActorRotation().Yaw;
+
 		const FVector WorldOffset = bFollowCharacterYaw
-			? TargetCharacter->GetActorRotation().RotateVector(FollowOffset)
+			? FRotator(0.f, CharYaw, 0.f).RotateVector(FollowOffset)
 			: FollowOffset;
 
+		const FRotator WorldRotation = bFollowCharacterYaw
+			? FRotator(FixedRotation.Pitch, CharYaw + FixedRotation.Yaw, FixedRotation.Roll)
+			: FixedRotation;
+
 		SetActorLocation(TargetCharacter->GetActorLocation() + WorldOffset);
-		SetActorRotation(FixedRotation);
+		SetActorRotation(WorldRotation);
 	}
 }
 
@@ -44,12 +50,18 @@ void AFollowCameraActor::Tick(float DeltaSeconds)
 
 	if (!IsValid(TargetCharacter)) return;
 
+	const float CharYaw = TargetCharacter->GetActorRotation().Yaw;
+
 	const FVector WorldOffset = bFollowCharacterYaw
-		? TargetCharacter->GetActorRotation().RotateVector(FollowOffset)
+		? FRotator(0.f, CharYaw, 0.f).RotateVector(FollowOffset)
 		: FollowOffset;
 
+	const FRotator WorldRotation = bFollowCharacterYaw
+		? FRotator(FixedRotation.Pitch, CharYaw + FixedRotation.Yaw, FixedRotation.Roll)
+		: FixedRotation;
+
 	SetActorLocation(TargetCharacter->GetActorLocation() + WorldOffset);
-	SetActorRotation(FixedRotation);
+	SetActorRotation(WorldRotation);
 }
 
 // ─── AFollowCameraVolume ──────────────────────────────────────
