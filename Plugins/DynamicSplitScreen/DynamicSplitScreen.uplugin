@@ -4,7 +4,7 @@
 	"VersionName": "1.0",
 	"FriendlyName": "Dynamic Split Screen",
 	"Description": "Dynamic split-screen and full-screen transition system with camera volumes.",
-	"Category": "UI",
+	"Category": "",
 	"CreatedBy": "Gravitia",
 	"CreatedByURL": "",
 	"DocsURL": "",
@@ -18,7 +18,10 @@
 		{
 			"Name": "DynamicSplitScreen",
 			"Type": "Runtime",
-			"LoadingPhase": "Default"
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64"
+			]
 		}
 	]
 }
