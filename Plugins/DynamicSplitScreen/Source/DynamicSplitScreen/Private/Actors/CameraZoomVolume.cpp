@@ -89,7 +89,7 @@ void ACameraZoomVolume::OnTriggerBeginOverlap(UPrimitiveComponent* OverlappedCom
 		PlayersInside++;
 	}
 
-	if (bMergeWhenBothInside)
+	if (bMergeOnEnter)
 	{
 		TryMergeSplitScreen(Character);
 	}
@@ -111,7 +111,7 @@ void ACameraZoomVolume::OnTriggerEndOverlap(UPrimitiveComponent* OverlappedCompo
 		PlayersInside = FMath::Max(0, PlayersInside - 1);
 	}
 
-	if (bMergeWhenBothInside)
+	if (bMergeOnEnter)
 	{
 		TryRestoreSplitScreen();
 	}
@@ -121,7 +121,8 @@ void ACameraZoomVolume::OnTriggerEndOverlap(UPrimitiveComponent* OverlappedCompo
 
 void ACameraZoomVolume::TryMergeSplitScreen(ACharacter* EnteringCharacter)
 {
-	if (!bCurrentlyMerged && PlayersInside >= 2)
+	const int32 RequiredCount = bRequireBothPlayers ? 2 : 1;
+	if (!bCurrentlyMerged && PlayersInside >= RequiredCount)
 	{
 		UGameInstance* GI = GetGameInstance();
 		if (!GI) return;
@@ -149,7 +150,8 @@ void ACameraZoomVolume::TryMergeSplitScreen(ACharacter* EnteringCharacter)
 
 void ACameraZoomVolume::TryRestoreSplitScreen()
 {
-	if (bCurrentlyMerged && PlayersInside < 2)
+	const int32 RequiredCount = bRequireBothPlayers ? 2 : 1;
+	if (bCurrentlyMerged && PlayersInside < RequiredCount)
 	{
 		UGameInstance* GI = GetGameInstance();
 		if (!GI) return;

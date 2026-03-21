@@ -44,16 +44,23 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume")
 	float ZoomInterpSpeed = 5.f;
 
-	/** If true, merges split screen into one viewport when both players are inside. */
+	/** If true, merges split screen into one viewport when a player enters. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen")
-	bool bMergeWhenBothInside = false;
+	bool bMergeOnEnter = false;
+
+	/**
+	 * If true, merges only when both players are inside.
+	 * If false, merges as soon as any one player enters.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen", meta = (EditCondition = "bMergeOnEnter"))
+	bool bRequireBothPlayers = false;
 
 	/** Which player's view to show when merged (0 = Player 1, 1 = Player 2). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen", meta = (EditCondition = "bMergeWhenBothInside", ClampMin = "0", ClampMax = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen", meta = (EditCondition = "bMergeOnEnter", ClampMin = "0", ClampMax = "1"))
 	int32 MergedPlayerIndex = 0;
 
 	/** If true, uses the entering player's index instead of MergedPlayerIndex. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen", meta = (EditCondition = "bMergeWhenBothInside"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen", meta = (EditCondition = "bMergeOnEnter"))
 	bool bMergeToEnteringPlayer = false;
 
 private:
