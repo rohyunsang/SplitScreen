@@ -10,7 +10,7 @@ public class SplitScreenEditorTarget : TargetRules
 		Type = TargetType.Editor;
 		DefaultBuildSettings = BuildSettingsVersion.Latest;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
-		BuildEnvironment = TargetBuildEnvironment.Unique;
+		bOverrideBuildEnvironment = true;
 		ExtraModuleNames.Add("SplitScreen");
 	}
 }
