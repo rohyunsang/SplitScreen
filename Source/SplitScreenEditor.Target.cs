@@ -8,8 +8,9 @@ public class SplitScreenEditorTarget : TargetRules
 	public SplitScreenEditorTarget(TargetInfo Target) : base(Target)
 	{
 		Type = TargetType.Editor;
-		DefaultBuildSettings = BuildSettingsVersion.V5;
-		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_5;
+		DefaultBuildSettings = BuildSettingsVersion.Latest;
+		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
+		BuildEnvironment = TargetBuildEnvironment.Unique;
 		ExtraModuleNames.Add("SplitScreen");
 	}
 }
