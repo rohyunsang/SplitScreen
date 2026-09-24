@@ -10,6 +10,9 @@
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "InputActionValue.h"
+#include "Materials/MaterialInterface.h"
+#include "Net/UnrealNetwork.h"
+#include "UObject/ConstructorHelpers.h"
 
 DEFINE_LOG_CATEGORY(LogTemplateCharacter);
 
@@ -53,8 +56,61 @@ ASplitScreenCharacter::ASplitScreenCharacter()
 	GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	GetMesh()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 
-	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
+	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character)
 	// are set in the derived blueprint asset named ThirdPersonCharacter (to avoid direct content references in C++)
+
+	// Tinted mannequin materials so Player 1 (blue) and Player 2 (orange) are easy to tell apart
+	static const TCHAR* PlayerMaterialPaths[2][2] = {
+		{ TEXT("/Game/DynamicSplitScreenDemo/Materials/Players/MI_Quinn_01_P1"), TEXT("/Game/DynamicSplitScreenDemo/Materials/Players/MI_Quinn_02_P1") },
+		{ TEXT("/Game/DynamicSplitScreenDemo/Materials/Players/MI_Quinn_01_P2"), TEXT("/Game/DynamicSplitScreenDemo/Materials/Players/MI_Quinn_02_P2") },
+	};
+	for (int32 Slot = 0; Slot < 2; ++Slot)
+	{
+		TArray<TObjectPtr<UMaterialInterface>>& Materials = (Slot == 0) ? Player1Materials : Player2Materials;
+		for (const TCHAR* Path : PlayerMaterialPaths[Slot])
+		{
+			ConstructorHelpers::FObjectFinder<UMaterialInterface> Finder(Path);
+			Materials.Add(Finder.Object);
+		}
+	}
+}
+
+void ASplitScreenCharacter::BeginPlay()
+{
+	Super::BeginPlay();
+	ApplyPlayerMaterials();
+}
+
+void ASplitScreenCharacter::PossessedBy(AController* NewController)
+{
+	Super::PossessedBy(NewController);
+
+	// Server only: the listen server's own player is Player 1, the remote client is Player 2
+	PlayerSlot = (NewController && NewController->IsLocalController()) ? 0 : 1;
+	ApplyPlayerMaterials();
+}
+
+void ASplitScreenCharacter::OnRep_PlayerSlot()
+{
+	ApplyPlayerMaterials();
+}
+
+void ASplitScreenCharacter::ApplyPlayerMaterials()
+{
+	const TArray<TObjectPtr<UMaterialInterface>>& Materials = (PlayerSlot == 0) ? Player1Materials : Player2Materials;
+	for (int32 Index = 0; Index < Materials.Num(); ++Index)
+	{
+		if (Materials[Index])
+		{
+			GetMesh()->SetMaterial(Index, Materials[Index]);
+		}
+	}
+}
+
+void ASplitScreenCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(ASplitScreenCharacter, PlayerSlot);
 }
 
 //////////////////////////////////////////////////////////////////////////

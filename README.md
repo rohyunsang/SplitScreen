@@ -55,6 +55,7 @@ The example project does not contain the plugin itself.
 4. Press **Play**. The project is preset to **Net Mode: Play As Listen Server** with **2 players**,
    so two windows open (host and client).
 5. Move with **W A S D**, look with the mouse, jump with **Space**, and walk onto the coloured pads.
+   Player 1 (host) is blue, Player 2 (client) is orange.
 
 ![Demo map](Docs/images/e_overview.jpg)
 
