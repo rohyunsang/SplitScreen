@@ -2,11 +2,10 @@
 
 
 #include "Actors/SplitScreenTransitionTrigger.h"
+#include "DynamicSplitScreen.h"
 #include "Components/BoxComponent.h"
 #include "GameFramework/Character.h"
-#include "GameFramework/PlayerController.h"
 #include "Subsystem/DynamicSplitScreenSubsystem.h"
-#include "Engine/LocalPlayer.h"
 #include "Engine/GameInstance.h"
 
 ASplitScreenTransitionTrigger::ASplitScreenTransitionTrigger()
@@ -27,7 +26,7 @@ ASplitScreenTransitionTrigger::ASplitScreenTransitionTrigger()
 void ASplitScreenTransitionTrigger::BeginPlay()
 {
 	Super::BeginPlay();
-	PlayersInTrigger = 0;
+	OccupantOverlapCounts.Empty();
 }
 
 void ASplitScreenTransitionTrigger::OnTriggerBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepHitResult)
@@ -35,30 +34,24 @@ void ASplitScreenTransitionTrigger::OnTriggerBeginOverlap(UPrimitiveComponent* O
 	ACharacter* Character = Cast<ACharacter>(OtherActor);
 	if (!Character) return;
 
-	APlayerController* PC = Cast<APlayerController>(Character->GetController());
-	if (!PC) return;
-
-	PlayersInTrigger++;
-
-	// Determine target player index
-	int32 TargetPlayerIndex = FixedFullScreenPlayerIndex;
-
-	if (bFullScreenForEnteringPlayer)
+	// Transitions only change this machine's view
+	if (!UDynamicSplitScreenSubsystem::ShouldLocalViewRespondTo(Character, bFullScreenForEnteringPlayer, FixedFullScreenPlayerIndex))
 	{
-		ULocalPlayer* LP = PC->GetLocalPlayer();
-		if (LP)
-		{
-			TargetPlayerIndex = LP->GetControllerId();
-		}
+		return;
 	}
 
-	// Request transition via Subsystem
+	int32& OverlapCount = OccupantOverlapCounts.FindOrAdd(Character);
+	if (OverlapCount++ > 0)
+	{
+		return;
+	}
+
 	if (UGameInstance* GI = GetGameInstance())
 	{
 		if (UDynamicSplitScreenSubsystem* Subsystem = GI->GetSubsystem<UDynamicSplitScreenSubsystem>())
 		{
-			Subsystem->TransitionToFullScreen(TargetPlayerIndex);
-			UE_LOG(LogTemp, Log, TEXT("SplitScreenTrigger: Player %d entered -> Full Screen transition"), TargetPlayerIndex);
+			Subsystem->RequestFullScreen(this);
+			UE_LOG(LogDynamicSplitScreen, Log, TEXT("SplitScreenTrigger: %s entered -> Full Screen transition"), *Character->GetName());
 		}
 	}
 }
@@ -68,20 +61,36 @@ void ASplitScreenTransitionTrigger::OnTriggerEndOverlap(UPrimitiveComponent* Ove
 	ACharacter* Character = Cast<ACharacter>(OtherActor);
 	if (!Character) return;
 
-	APlayerController* PC = Cast<APlayerController>(Character->GetController());
-	if (!PC) return;
+	int32* OverlapCount = OccupantOverlapCounts.Find(Character);
+	if (!OverlapCount)
+	{
+		return;	// this character did not change our screen
+	}
 
-	PlayersInTrigger = FMath::Max(0, PlayersInTrigger - 1);
+	// Another component of the same character is still inside
+	if (--(*OverlapCount) > 0)
+	{
+		return;
+	}
+	OccupantOverlapCounts.Remove(Character);
 
-	// Restore split screen when all players leave the trigger
-	if (PlayersInTrigger <= 0)
+	// Weak keys of destroyed characters are not removed by Remove(nullptr)
+	for (auto It = OccupantOverlapCounts.CreateIterator(); It; ++It)
+	{
+		if (!It->Key.IsValid())
+		{
+			It.RemoveCurrent();
+		}
+	}
+
+	if (OccupantOverlapCounts.Num() == 0)
 	{
 		if (UGameInstance* GI = GetGameInstance())
 		{
 			if (UDynamicSplitScreenSubsystem* Subsystem = GI->GetSubsystem<UDynamicSplitScreenSubsystem>())
 			{
-				Subsystem->TransitionToSplitScreen();
-				UE_LOG(LogTemp, Log, TEXT("SplitScreenTrigger: All players left -> Split Screen transition"));
+				Subsystem->ReleaseFullScreen(this);
+				UE_LOG(LogDynamicSplitScreen, Log, TEXT("SplitScreenTrigger: all players left -> Split Screen transition"));
 			}
 		}
 	}

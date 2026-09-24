@@ -36,6 +36,7 @@ public class DynamicSplitScreen : ModuleRules
 			{
 				"CoreUObject",
 				"Engine",
+				"RenderCore",
 				"Slate",
 				"SlateCore",
 				// ... add private dependencies that you statically link with here ...	

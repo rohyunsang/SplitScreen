@@ -7,10 +7,11 @@
 #include "SplitScreenTransitionTrigger.generated.h"
 
 class UBoxComponent;
+class ACharacter;
 
 /**
- * Trigger actor placed in a level. When a character enters, it triggers a transition 
- * from Split Screen to Full Screen. When leaving, Full Screen to Split Screen.
+ * Trigger actor placed in a level. When the local player enters, this machine's screen transitions
+ * from split screen to full screen. When they leave, it returns to split screen.
  */
 UCLASS()
 class DYNAMICSPLITSCREEN_API ASplitScreenTransitionTrigger : public AActor
@@ -33,15 +34,18 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Trigger")
 	TObjectPtr<UBoxComponent> TriggerBox;
 
-	/** If true, converts the viewport of the entering player to full screen. If false, uses FixedFullScreenPlayerIndex. */
+	/** If true, reacts to the player this machine controls. If false, reacts to the local player with FixedFullScreenPlayerIndex. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dynamic Split Screen")
 	bool bFullScreenForEnteringPlayer = true;
 
-	/** Fixed player index to use if bFullScreenForEnteringPlayer is false */
+	/** Local player index (ControllerId) used if bFullScreenForEnteringPlayer is false */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dynamic Split Screen", meta = (EditCondition = "!bFullScreenForEnteringPlayer"))
 	int32 FixedFullScreenPlayerIndex = 0;
 
 private:
-	/** Number of players currently inside the trigger */
-	int32 PlayersInTrigger = 0;
+	/**
+	 * Characters that made this machine go full screen -> number of their overlapping components.
+	 * One character can overlap with several components (capsule, mesh ...), so Begin/End arrive several times.
+	 */
+	TMap<TWeakObjectPtr<ACharacter>, int32> OccupantOverlapCounts;
 };

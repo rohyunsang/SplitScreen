@@ -1,11 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Actors/FollowCameraVolume.h"
+#include "DynamicSplitScreen.h"
 #include "Components/BoxComponent.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/PlayerController.h"
-#include "Engine/LocalPlayer.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "Subsystem/DynamicSplitScreenSubsystem.h"
@@ -84,7 +84,7 @@ AFollowCameraVolume::AFollowCameraVolume()
 void AFollowCameraVolume::BeginPlay()
 {
 	Super::BeginPlay();
-	PlayersInTrigger = 0;
+	Occupants.Empty();
 }
 
 void AFollowCameraVolume::OnTriggerBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepHitResult)
@@ -92,13 +92,15 @@ void AFollowCameraVolume::OnTriggerBeginOverlap(UPrimitiveComponent* OverlappedC
 	ACharacter* Character = Cast<ACharacter>(OtherActor);
 	if (!Character) return;
 
+	FOccupant& Occupant = Occupants.FindOrAdd(Character);
+	if (Occupant.OverlapCount++ > 0)
+	{
+		return;
+	}
+
+	// ── Spawn follow camera and switch view target (local players only) ──
 	APlayerController* PC = Cast<APlayerController>(Character->GetController());
-	if (!PC) return;
-
-	PlayersInTrigger++;
-
-	// ── Spawn follow camera and switch view target (Local Players Only) ──
-	if (Character->IsLocallyControlled())
+	if (PC && Character->IsLocallyControlled())
 	{
 		FActorSpawnParameters SpawnParams;
 		SpawnParams.Owner = this;
@@ -107,41 +109,35 @@ void AFollowCameraVolume::OnTriggerBeginOverlap(UPrimitiveComponent* OverlappedC
 		if (FollowCam)
 		{
 			FollowCam->InitFollow(Character, FollowOffset, FixedCameraRotation, bFollowCharacterYaw);
-			SpawnedCameras.Add(PC, FollowCam);
+			Occupant.FollowCamera = FollowCam;
+			Occupant.LockedPC = PC;
 
 			PC->SetViewTargetWithBlend(FollowCam, BlendTime);
 
 			if (bIgnoreLookInput)
 			{
 				PC->SetIgnoreLookInput(true);
+				Occupant.bLockedInput = true;
 			}
 		}
 	}
 
-	// ── Split Screen Transition (Optional) ──
-	if (bUseSplitScreenTransition)
+	// ── Split screen transition (optional, this machine only) ──
+	if (bUseSplitScreenTransition
+		&& UDynamicSplitScreenSubsystem::ShouldLocalViewRespondTo(Character, bFullScreenForEnteringPlayer, FixedFullScreenPlayerIndex))
 	{
-		int32 TargetPlayerIndex = FixedFullScreenPlayerIndex;
-
-		if (bFullScreenForEnteringPlayer)
-		{
-			if (ULocalPlayer* LP = PC->GetLocalPlayer())
-			{
-				TargetPlayerIndex = LP->GetControllerId();
-			}
-		}
+		Occupant.bRequestedFullScreen = true;
 
 		if (UGameInstance* GI = GetGameInstance())
 		{
 			if (UDynamicSplitScreenSubsystem* Subsystem = GI->GetSubsystem<UDynamicSplitScreenSubsystem>())
 			{
-				Subsystem->TransitionToFullScreen(TargetPlayerIndex);
-				UE_LOG(LogTemp, Log, TEXT("FollowCameraVolume: Player %d -> Full Screen transition"), TargetPlayerIndex);
+				Subsystem->RequestFullScreen(this);
 			}
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("FollowCameraVolume: %s entered -> Follow camera activated"), *Character->GetName());
+	UE_LOG(LogDynamicSplitScreen, Log, TEXT("FollowCameraVolume: %s entered -> Follow camera activated"), *Character->GetName());
 }
 
 void AFollowCameraVolume::OnTriggerEndOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex)
@@ -149,43 +145,65 @@ void AFollowCameraVolume::OnTriggerEndOverlap(UPrimitiveComponent* OverlappedCom
 	ACharacter* Character = Cast<ACharacter>(OtherActor);
 	if (!Character) return;
 
-	APlayerController* PC = Cast<APlayerController>(Character->GetController());
-	if (!PC) return;
+	FOccupant* Occupant = Occupants.Find(Character);
+	if (!Occupant) return;
 
-	PlayersInTrigger = FMath::Max(0, PlayersInTrigger - 1);
-
-	// ── Restore original camera (Local Players Only) ──
-	if (Character->IsLocallyControlled())
+	if (--Occupant->OverlapCount > 0)
 	{
-		PC->SetViewTargetWithBlend(Character, BlendTime);
-
-		if (bIgnoreLookInput)
-		{
-			PC->SetIgnoreLookInput(false);
-		}
-
-		if (TObjectPtr<AFollowCameraActor>* FollowCam = SpawnedCameras.Find(PC))
-		{
-			if (IsValid(*FollowCam))
-			{
-				(*FollowCam)->Destroy();
-			}
-			SpawnedCameras.Remove(PC);
-		}
+		return;
 	}
 
-	// ── Restore Split Screen (When all players have left) ──
-	if (bUseSplitScreenTransition && PlayersInTrigger <= 0)
+	// ── Restore original camera ──
+	APlayerController* PC = Cast<APlayerController>(Character->GetController());
+	if (!PC)
+	{
+		PC = Occupant->LockedPC.Get();
+	}
+
+	if (PC && Occupant->FollowCamera.IsValid())
+	{
+		PC->SetViewTargetWithBlend(Character, BlendTime);
+	}
+
+	if (PC && Occupant->bLockedInput)
+	{
+		PC->SetIgnoreLookInput(false);
+	}
+
+	if (AFollowCameraActor* FollowCam = Occupant->FollowCamera.Get())
+	{
+		FollowCam->Destroy();
+	}
+
+	const bool bWasFullScreenRequester = Occupant->bRequestedFullScreen;
+	Occupants.Remove(Character);
+
+	bool bAnyRequesterLeft = false;
+	for (auto It = Occupants.CreateIterator(); It; ++It)
+	{
+		if (!It->Key.IsValid())
+		{
+			if (AFollowCameraActor* Orphan = It->Value.FollowCamera.Get())
+			{
+				Orphan->Destroy();
+			}
+			It.RemoveCurrent();
+			continue;
+		}
+		bAnyRequesterLeft |= It->Value.bRequestedFullScreen;
+	}
+
+	// ── Restore split screen once every player that changed our screen has left ──
+	if (bUseSplitScreenTransition && bWasFullScreenRequester && !bAnyRequesterLeft)
 	{
 		if (UGameInstance* GI = GetGameInstance())
 		{
 			if (UDynamicSplitScreenSubsystem* Subsystem = GI->GetSubsystem<UDynamicSplitScreenSubsystem>())
 			{
-				Subsystem->TransitionToSplitScreen();
-				UE_LOG(LogTemp, Log, TEXT("FollowCameraVolume: All players left -> Restore split screen"));
+				Subsystem->ReleaseFullScreen(this);
 			}
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("FollowCameraVolume: %s exited -> Restored original camera"), *Character->GetName());
+	UE_LOG(LogDynamicSplitScreen, Log, TEXT("FollowCameraVolume: %s exited -> Restored original camera"), *Character->GetName());
 }

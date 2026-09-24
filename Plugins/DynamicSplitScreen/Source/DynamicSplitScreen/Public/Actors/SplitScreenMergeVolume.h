@@ -10,9 +10,9 @@ class UBoxComponent;
 class ACharacter;
 
 /**
- * Volume that merges the split screen into a single viewport when the required number
- * of players are inside, and restores split screen when they leave.
- * Does not switch cameras — purely controls viewport layout.
+ * Volume that merges the split screen into a single view when the required number of players
+ * (local or remote) are inside, and restores split screen when they leave.
+ * Each machine merges to its own player's view. Does not switch cameras — purely controls the layout.
  */
 UCLASS()
 class DYNAMICSPLITSCREEN_API ASplitScreenMergeVolume : public AActor
@@ -44,30 +44,18 @@ protected:
 	int32 PlayersRequiredToMerge = 2;
 
 	/**
-	 * If true, uses the first entering player's viewport index when merging.
-	 * If false, uses MergedPlayerIndex.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Split Screen Merge Volume")
-	bool bMergeToEnteringPlayer = false;
-
-	/** Fixed player index to use when bMergeToEnteringPlayer is false (0 = Player 1, 1 = Player 2). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Split Screen Merge Volume", meta = (EditCondition = "!bMergeToEnteringPlayer", ClampMin = "0", ClampMax = "1"))
-	int32 MergedPlayerIndex = 0;
-
-	/**
-	 * If true, restores split screen as soon as any player leaves.
+	 * If true, restores split screen as soon as the player count drops below PlayersRequiredToMerge.
 	 * If false, restores only when all players have left.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Split Screen Merge Volume")
 	bool bRestoreOnAnyPlayerExit = true;
 
 private:
-	int32 PlayersInside = 0;
+	/** Player characters inside -> number of their overlapping components */
+	TMap<TWeakObjectPtr<ACharacter>, int32> OccupantOverlapCounts;
+
 	bool bCurrentlyMerged = false;
 
-	/** Player index stored when merging, used for log consistency. */
-	int32 ActiveMergedPlayerIndex = 0;
-
-	void TryMerge(ACharacter* EnteringCharacter);
-	void TryRestore();
+	int32 GetPlayersInside();
+	void UpdateMergeState();
 };

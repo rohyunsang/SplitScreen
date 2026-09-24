@@ -1,10 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Actors/SplitScreenMergeVolume.h"
+#include "DynamicSplitScreen.h"
 #include "Components/BoxComponent.h"
 #include "GameFramework/Character.h"
-#include "GameFramework/PlayerController.h"
-#include "Engine/LocalPlayer.h"
 #include "Engine/GameInstance.h"
 #include "Subsystem/DynamicSplitScreenSubsystem.h"
 
@@ -26,83 +25,88 @@ ASplitScreenMergeVolume::ASplitScreenMergeVolume()
 void ASplitScreenMergeVolume::BeginPlay()
 {
 	Super::BeginPlay();
-	PlayersInside = 0;
+	OccupantOverlapCounts.Empty();
 	bCurrentlyMerged = false;
 }
 
 void ASplitScreenMergeVolume::OnTriggerBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepHitResult)
 {
 	ACharacter* Character = Cast<ACharacter>(OtherActor);
-	if (!Character || !Character->IsLocallyControlled()) return;
 
-	PlayersInside++;
+	// Only player characters count (PlayerState is replicated, so remote players are counted on every machine)
+	if (!Character || !Character->GetPlayerState()) return;
 
-	UE_LOG(LogTemp, Log, TEXT("SplitScreenMergeVolume: %s entered (%d/%d players inside)"),
-		*Character->GetName(), PlayersInside, PlayersRequiredToMerge);
+	int32& OverlapCount = OccupantOverlapCounts.FindOrAdd(Character);
+	if (OverlapCount++ > 0)
+	{
+		return;
+	}
 
-	TryMerge(Character);
+	UE_LOG(LogDynamicSplitScreen, Log, TEXT("SplitScreenMergeVolume: %s entered (%d/%d players inside)"),
+		*Character->GetName(), GetPlayersInside(), PlayersRequiredToMerge);
+
+	UpdateMergeState();
 }
 
 void ASplitScreenMergeVolume::OnTriggerEndOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex)
 {
 	ACharacter* Character = Cast<ACharacter>(OtherActor);
-	if (!Character || !Character->IsLocallyControlled()) return;
+	if (!Character) return;
 
-	PlayersInside = FMath::Max(0, PlayersInside - 1);
+	int32* OverlapCount = OccupantOverlapCounts.Find(Character);
+	if (!OverlapCount) return;
 
-	UE_LOG(LogTemp, Log, TEXT("SplitScreenMergeVolume: %s exited (%d players inside)"),
-		*Character->GetName(), PlayersInside);
+	if (--(*OverlapCount) > 0)
+	{
+		return;
+	}
+	OccupantOverlapCounts.Remove(Character);
 
-	TryRestore();
+	UE_LOG(LogDynamicSplitScreen, Log, TEXT("SplitScreenMergeVolume: %s exited (%d players inside)"),
+		*Character->GetName(), GetPlayersInside());
+
+	UpdateMergeState();
 }
 
-void ASplitScreenMergeVolume::TryMerge(ACharacter* EnteringCharacter)
+int32 ASplitScreenMergeVolume::GetPlayersInside()
 {
-	if (bCurrentlyMerged || PlayersInside < PlayersRequiredToMerge) return;
-
-	UGameInstance* GI = GetGameInstance();
-	if (!GI) return;
-
-	UDynamicSplitScreenSubsystem* Subsystem = GI->GetSubsystem<UDynamicSplitScreenSubsystem>();
-	if (!Subsystem) return;
-
-	ActiveMergedPlayerIndex = MergedPlayerIndex;
-
-	if (bMergeToEnteringPlayer)
+	for (auto It = OccupantOverlapCounts.CreateIterator(); It; ++It)
 	{
-		if (APlayerController* PC = Cast<APlayerController>(EnteringCharacter->GetController()))
+		if (!It->Key.IsValid())
 		{
-			if (ULocalPlayer* LP = PC->GetLocalPlayer())
-			{
-				ActiveMergedPlayerIndex = LP->GetControllerId();
-			}
+			It.RemoveCurrent();
 		}
 	}
-
-	Subsystem->TransitionToFullScreen(ActiveMergedPlayerIndex);
-	bCurrentlyMerged = true;
-
-	UE_LOG(LogTemp, Log, TEXT("SplitScreenMergeVolume: Merged -> Player %d full screen"), ActiveMergedPlayerIndex);
+	return OccupantOverlapCounts.Num();
 }
 
-void ASplitScreenMergeVolume::TryRestore()
+void ASplitScreenMergeVolume::UpdateMergeState()
 {
-	if (!bCurrentlyMerged) return;
+	UGameInstance* GI = GetGameInstance();
+	UDynamicSplitScreenSubsystem* Subsystem = GI ? GI->GetSubsystem<UDynamicSplitScreenSubsystem>() : nullptr;
+	if (!Subsystem) return;
+
+	const int32 PlayersInside = GetPlayersInside();
+
+	if (!bCurrentlyMerged)
+	{
+		if (PlayersInside >= PlayersRequiredToMerge)
+		{
+			Subsystem->RequestFullScreen(this);
+			bCurrentlyMerged = true;
+			UE_LOG(LogDynamicSplitScreen, Log, TEXT("SplitScreenMergeVolume: merged"));
+		}
+		return;
+	}
 
 	const bool bShouldRestore = bRestoreOnAnyPlayerExit
 		? (PlayersInside < PlayersRequiredToMerge)
 		: (PlayersInside <= 0);
 
-	if (!bShouldRestore) return;
-
-	UGameInstance* GI = GetGameInstance();
-	if (!GI) return;
-
-	UDynamicSplitScreenSubsystem* Subsystem = GI->GetSubsystem<UDynamicSplitScreenSubsystem>();
-	if (!Subsystem) return;
-
-	Subsystem->TransitionToSplitScreen();
-	bCurrentlyMerged = false;
-
-	UE_LOG(LogTemp, Log, TEXT("SplitScreenMergeVolume: Restored split screen"));
+	if (bShouldRestore)
+	{
+		Subsystem->ReleaseFullScreen(this);
+		bCurrentlyMerged = false;
+		UE_LOG(LogDynamicSplitScreen, Log, TEXT("SplitScreenMergeVolume: restored split screen"));
+	}
 }

@@ -8,10 +8,13 @@
 
 class UBoxComponent;
 class UCameraComponent;
+class ACharacter;
+class APlayerController;
 
 /**
  * Trigger actor that forces a fixed camera perspective on entering characters.
- * Restores the original 3rd-person camera upon exiting.
+ * The camera is locked to this actor's CameraComponent. The control rotation is blended
+ * so the movement direction changes smoothly. Restores the 3rd-person camera upon exiting.
  */
 UCLASS()
 class DYNAMICSPLITSCREEN_API AFixedCameraVolume : public AActor
@@ -23,6 +26,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaTime) override;
 
 	UFUNCTION()
 	void OnTriggerBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepHitResult);
@@ -42,26 +46,58 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Volume")
 	float BlendTime = 0.75f;
 
-	/** Fixed control rotation forced on the player controller within the volume */
+	/** Control rotation used inside the volume (defines the movement direction) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Volume")
 	FRotator FixedControlRotation = FRotator(0.f, 0.f, 0.f);
+
+	/** Control rotation blend duration (seconds). Independent of the camera BlendTime. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Volume")
+	float ControlRotationBlendTime = 0.75f;
+
+	/**
+	 * If false (default), keeps the current yaw on exit so the movement direction does not jump; only pitch/roll are restored.
+	 * If true, fully restores the control rotation from before entering.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Volume")
+	bool bRestoreControlRotationOnExit = false;
 
 	/** If true, triggers a full screen transition when entered, and returns to split screen when exited */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Volume")
 	bool bUseSplitScreenTransition = false;
 
-	/** If true, converts the viewport of the entering player to full screen. If false, uses FixedFullScreenPlayerIndex. */
+	/** If true, reacts to the player this machine controls. If false, reacts to the local player with FixedFullScreenPlayerIndex. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Volume", meta = (EditCondition = "bUseSplitScreenTransition"))
 	bool bFullScreenForEnteringPlayer = true;
 
-	/** Fixed player index to use if bFullScreenForEnteringPlayer is false */
+	/** Local player index (ControllerId) used if bFullScreenForEnteringPlayer is false */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Volume", meta = (EditCondition = "bUseSplitScreenTransition && !bFullScreenForEnteringPlayer"))
 	int32 FixedFullScreenPlayerIndex = 0;
 
 private:
-	/** Stored control rotations prior to entering the volume */
-	TMap<APlayerController*, FRotator> SavedControlRotations;
+	/**
+	 * Per-character state. Overlaps are counted because one character can overlap with several components,
+	 * and SetIgnoreLookInput is a stack counter: mismatched lock/unlock would lock look input forever.
+	 */
+	struct FOccupant
+	{
+		TWeakObjectPtr<APlayerController> LockedPC;
+		FRotator SavedControlRotation = FRotator::ZeroRotator;
+		int32 OverlapCount = 0;
+		bool bLockedInput = false;
+		bool bRequestedFullScreen = false;
+	};
 
-	/** Number of players currently inside the trigger */
-	int32 PlayersInTrigger = 0;
+	TMap<TWeakObjectPtr<ACharacter>, FOccupant> Occupants;
+
+	struct FControlRotationBlend
+	{
+		FRotator StartRotation = FRotator::ZeroRotator;
+		FRotator TargetRotation = FRotator::ZeroRotator;
+		float Elapsed = 0.f;
+		float Duration = 0.75f;
+	};
+
+	TMap<TWeakObjectPtr<APlayerController>, FControlRotationBlend> ControlRotationBlends;
+
+	void StartControlRotationBlend(APlayerController* PC, const FRotator& Target);
 };

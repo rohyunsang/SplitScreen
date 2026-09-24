@@ -1,53 +1,37 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DynamicSplitScreenGameMode.h"
-#include "Controllers/DynamicSplitScreenSpectatorPawn.h"
+#include "DynamicSplitScreen.h"
+#include "Actors/DynamicSplitScreenCameraProxy.h"
 #include "Controllers/DynamicSplitScreenPlayerController.h"
 #include "Subsystem/DynamicSplitScreenSubsystem.h"
-#include "Engine/LocalPlayer.h"
+#include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
-#include "TimerManager.h"
-#include "Components/SkeletalMeshComponent.h"
+#include "GameFramework/PlayerController.h"
 
 ADynamicSplitScreenGameMode::ADynamicSplitScreenGameMode()
 {
 	PlayerControllerClass = ADynamicSplitScreenPlayerController::StaticClass();
-	DummySpectatorPawnClass = ADynamicSplitScreenSpectatorPawn::StaticClass();
-	DummyPlayerControllerClass = ADynamicSplitScreenPlayerController::StaticClass();
+	CameraProxyClass = ADynamicSplitScreenCameraProxy::StaticClass();
 }
 
 void ADynamicSplitScreenGameMode::BeginPlay()
 {
 	Super::BeginPlay();
 
-	UGameInstance* GameInstance = GetGameInstance();
-	if (!GameInstance) return;
-
-	if (GameInstance->GetNumLocalPlayers() < 2)
+	if (GetNetMode() == NM_Standalone)
 	{
-		FString OutError;
-		ULocalPlayer* DummyLocalPlayer = GameInstance->CreateLocalPlayer(1, OutError, false);
-		if (DummyLocalPlayer)
+		UE_LOG(LogDynamicSplitScreen, Warning,
+			TEXT("Split screen needs two players over the network. In the editor use Play > Net Mode: Play As Listen Server, Number of Players: 2."));
+
+#if !UE_BUILD_SHIPPING
+		if (GEngine)
 		{
-			TSubclassOf<ADynamicSplitScreenPlayerController> ControllerClass = DummyPlayerControllerClass;
-			if (!ControllerClass)
-			{
-				ControllerClass = ADynamicSplitScreenPlayerController::StaticClass();
-			}
-
-			DummyPlayerController = GetWorld()->SpawnActor<ADynamicSplitScreenPlayerController>(ControllerClass);
-			if (ADynamicSplitScreenPlayerController* DSC = Cast<ADynamicSplitScreenPlayerController>(DummyPlayerController))
-			{
-				DSC->SetAsDummyController(true);
-				DSC->SetPlayer(DummyLocalPlayer);
-			}
+			GEngine->AddOnScreenDebugMessage(INDEX_NONE, 15.f, FColor::Yellow,
+				TEXT("Dynamic Split Screen: run with Net Mode 'Play As Listen Server' and Number of Players = 2 to see split screen."));
 		}
-	}
-
-	if (UDynamicSplitScreenSubsystem* Subsystem = GameInstance->GetSubsystem<UDynamicSplitScreenSubsystem>())
-	{
-		Subsystem->EnableSplitScreen();
+#endif
 	}
 }
 
@@ -55,85 +39,67 @@ void ADynamicSplitScreenGameMode::PostLogin(APlayerController* NewPlayer)
 {
 	Super::PostLogin(NewPlayer);
 
-	if (NewPlayer && !NewPlayer->IsLocalController())
-	{
-		AttachDummySpectatorToClient(NewPlayer);
-	}
+	CreateCameraProxiesForPlayer(NewPlayer);
+	TryEnableSplitScreen();
 }
 
-void ADynamicSplitScreenGameMode::AttachDummySpectatorToClient(APlayerController* RemoteClient)
+void ADynamicSplitScreenGameMode::Logout(AController* Exiting)
 {
-	if (!RemoteClient || !RemoteClient->GetPawn()) return;
-
-	CachedRemoteClient = RemoteClient;
-	APawn* ClientPawn = RemoteClient->GetPawn();
-	USkeletalMeshComponent* Mesh = ClientPawn->FindComponentByClass<USkeletalMeshComponent>();
-
-	if (!Mesh) return;
-
-	if (!DummySpectatorPawn)
+	if (APlayerController* PC = Cast<APlayerController>(Exiting))
 	{
-		TSubclassOf<ADynamicSplitScreenSpectatorPawn> SpawnClass = DummySpectatorPawnClass;
-		if (!SpawnClass)
+		if (TObjectPtr<ADynamicSplitScreenCameraProxy>* Found = ClientCameraProxies.Find(PC))
 		{
-			SpawnClass = ADynamicSplitScreenSpectatorPawn::StaticClass();
+			if (IsValid(*Found))
+			{
+				(*Found)->Destroy();
+			}
+			ClientCameraProxies.Remove(PC);
 		}
-
-		DummySpectatorPawn = GetWorld()->SpawnActor<ADynamicSplitScreenSpectatorPawn>(
-			SpawnClass,
-			FVector::ZeroVector,
-			FRotator::ZeroRotator
-		);
 	}
 
-	if (!DummySpectatorPawn) return;
+	Super::Logout(Exiting);
+}
 
-	FName AttachSocketName = TEXT("camera_socket");
-	if (!Mesh->DoesSocketExist(AttachSocketName))
+void ADynamicSplitScreenGameMode::CreateCameraProxiesForPlayer(APlayerController* NewPlayer)
+{
+	if (!NewPlayer) return;
+
+	UClass* ProxyClass = CameraProxyClass ? CameraProxyClass.Get() : ADynamicSplitScreenCameraProxy::StaticClass();
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	if (!NewPlayer->IsLocalController())
 	{
-		DummySpectatorPawn->AttachToActor(ClientPawn, FAttachmentTransformRules::KeepRelativeTransform);
+		// Remote client: it sends its camera up through RPC and the proxy replicates it to everyone
+		SpawnParams.Owner = NewPlayer;
+		ADynamicSplitScreenCameraProxy* ClientProxy = GetWorld()->SpawnActor<ADynamicSplitScreenCameraProxy>(ProxyClass, FTransform::Identity, SpawnParams);
+		if (ClientProxy)
+		{
+			ClientProxy->SetIsServerProxy(false);
+			ClientCameraProxies.Add(NewPlayer, ClientProxy);
+		}
 	}
-	else
+	else if (!ServerCameraProxy)
 	{
-		FAttachmentTransformRules AttachRules(EAttachmentRule::SnapToTarget, EAttachmentRule::KeepWorld, EAttachmentRule::KeepWorld, true);
-		DummySpectatorPawn->AttachToComponent(Mesh, AttachRules, AttachSocketName);
-	}
-
-	DummySpectatorPawn->SetActorHiddenInGame(true);
-	DummySpectatorPawn->SetActorEnableCollision(false);
-
-	if (DummyPlayerController && !DummySpectatorPawn->GetController())
-	{
-		DummyPlayerController->Possess(DummySpectatorPawn);
-	}
-
-	if (!GetWorldTimerManager().IsTimerActive(SyncTimerHandle))
-	{
-		GetWorldTimerManager().SetTimer(
-			SyncTimerHandle,
-			this,
-			&ADynamicSplitScreenGameMode::SyncDummyWithRemoteClient,
-			0.016f,
-			true
-		);
+		// Listen server's local player: the host fills this proxy with its own camera
+		ServerCameraProxy = GetWorld()->SpawnActor<ADynamicSplitScreenCameraProxy>(ProxyClass, FTransform::Identity, SpawnParams);
+		if (ServerCameraProxy)
+		{
+			ServerCameraProxy->SetIsServerProxy(true);
+			ServerCameraProxy->SetSourcePC(NewPlayer);
+		}
 	}
 }
 
-void ADynamicSplitScreenGameMode::SyncDummyWithRemoteClient()
+void ADynamicSplitScreenGameMode::TryEnableSplitScreen()
 {
-	if (!DummySpectatorPawn || !DummyPlayerController || !CachedRemoteClient) return;
+	if (!bAutoEnableSplitScreen) return;
+	if (GetNetMode() != NM_ListenServer) return;
+	if (GetNumPlayers() < 2) return;
 
-	if (!CachedRemoteClient->GetPawn()) return;
-
-	const FRotator TargetRot = CachedRemoteClient->GetControlRotation();
-	const FRotator CurrentRot = DummyPlayerController->GetControlRotation();
-
-	const FRotator NewRot = FMath::RInterpTo(
-		CurrentRot,
-		TargetRot,
-		GetWorld()->GetDeltaSeconds(),
-		20.f
-	);
-
-	DummyPlayerController->SetControlRotation(NewRot);
+	if (UDynamicSplitScreenSubsystem* Subsystem = GetGameInstance()->GetSubsystem<UDynamicSplitScreenSubsystem>())
+	{
+		Subsystem->EnableSplitScreen();
+	}
 }

@@ -10,9 +10,9 @@ class UBoxComponent;
 class ACharacter;
 
 /**
- * Volume that smoothly adjusts the camera zoom (SpringArm length) when a character enters.
- * Optionally merges split screen into a single viewport when both players are inside.
- * Restores original zoom and split screen when players exit.
+ * Volume that smoothly adjusts the camera zoom (SpringArm length) of the local player inside it.
+ * Optionally switches this machine's screen to full screen while the local player is inside.
+ * Restores the original zoom and split screen on exit.
  */
 UCLASS()
 class DYNAMICSPLITSCREEN_API ACameraZoomVolume : public AActor
@@ -44,37 +44,26 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume")
 	float ZoomInterpSpeed = 5.f;
 
-	/** If true, merges split screen into one viewport when a player enters. */
+	/** If true, this machine's screen goes full screen while the local player is inside. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen")
-	bool bMergeOnEnter = false;
+	bool bUseSplitScreenTransition = false;
 
-	/**
-	 * If true, merges only when both players are inside.
-	 * If false, merges as soon as any one player enters.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen", meta = (EditCondition = "bMergeOnEnter"))
-	bool bRequireBothPlayers = false;
+	/** If true, reacts to the player this machine controls. If false, reacts to the local player with FixedFullScreenPlayerIndex. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen", meta = (EditCondition = "bUseSplitScreenTransition"))
+	bool bFullScreenForEnteringPlayer = true;
 
-	/** Which player's view to show when merged (0 = Player 1, 1 = Player 2). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen", meta = (EditCondition = "bMergeOnEnter", ClampMin = "0", ClampMax = "1"))
-	int32 MergedPlayerIndex = 0;
-
-	/** If true, uses the entering player's index instead of MergedPlayerIndex. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen", meta = (EditCondition = "bMergeOnEnter"))
-	bool bMergeToEnteringPlayer = false;
+	/** Local player index (ControllerId) used if bFullScreenForEnteringPlayer is false */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Camera Zoom Volume|Split Screen", meta = (EditCondition = "bUseSplitScreenTransition && !bFullScreenForEnteringPlayer"))
+	int32 FixedFullScreenPlayerIndex = 0;
 
 private:
 	struct FZoomState
 	{
 		float OriginalArmLength = 400.f;
-		bool bInside = false;
+		int32 OverlapCount = 0;
+		bool bRequestedFullScreen = false;
 	};
 
-	TMap<ACharacter*, FZoomState> ZoomStates;
-
-	int32 PlayersInside = 0;
-	bool bCurrentlyMerged = false;
-
-	void TryMergeSplitScreen(ACharacter* EnteringCharacter);
-	void TryRestoreSplitScreen();
+	/** Characters inside the volume, and characters still blending back (OverlapCount == 0) */
+	TMap<TWeakObjectPtr<ACharacter>, FZoomState> ZoomStates;
 };

@@ -2,6 +2,8 @@
 
 #include "DynamicSplitScreen.h"
 
+DEFINE_LOG_CATEGORY(LogDynamicSplitScreen);
+
 #define LOCTEXT_NAMESPACE "FDynamicSplitScreenModule"
 
 void FDynamicSplitScreenModule::StartupModule()

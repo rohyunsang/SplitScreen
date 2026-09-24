@@ -96,18 +96,24 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Follow Camera Volume|Split Screen")
 	bool bUseSplitScreenTransition = false;
 
-	/** If true, the entering player's viewport goes full screen. If false, uses FixedFullScreenPlayerIndex. */
+	/** If true, reacts to the player this machine controls. If false, reacts to the local player with FixedFullScreenPlayerIndex. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Follow Camera Volume|Split Screen", meta = (EditCondition = "bUseSplitScreenTransition"))
 	bool bFullScreenForEnteringPlayer = true;
 
-	/** Fixed player index to use when bFullScreenForEnteringPlayer is false. */
+	/** Local player index (ControllerId) used when bFullScreenForEnteringPlayer is false. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Default|Follow Camera Volume|Split Screen", meta = (EditCondition = "bUseSplitScreenTransition && !bFullScreenForEnteringPlayer"))
 	int32 FixedFullScreenPlayerIndex = 0;
 
 private:
-	/** Spawned follow camera actors, keyed by player controller. */
-	UPROPERTY()
-	TMap<TObjectPtr<APlayerController>, TObjectPtr<AFollowCameraActor>> SpawnedCameras;
+	/** Per-character state. Overlaps are counted so that lock/unlock and camera spawn/destroy stay 1:1. */
+	struct FOccupant
+	{
+		TWeakObjectPtr<APlayerController> LockedPC;
+		TWeakObjectPtr<AFollowCameraActor> FollowCamera;
+		int32 OverlapCount = 0;
+		bool bLockedInput = false;
+		bool bRequestedFullScreen = false;
+	};
 
-	int32 PlayersInTrigger = 0;
+	TMap<TWeakObjectPtr<ACharacter>, FOccupant> Occupants;
 };
