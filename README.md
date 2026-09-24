@@ -7,6 +7,7 @@ on the other half. Level volumes switch the screen between split and full view.
 - Unreal Engine **5.8** · Win64 · Listen server, 2 players · Network replicated
 - Runtime module: `DynamicSplitScreen` · no third-party dependencies
 - Video: https://www.youtube.com/watch?v=Sr370iMZrtE
+- PDF manual: [Docs/DynamicSplitScreen_Manual.pdf](Docs/DynamicSplitScreen_Manual.pdf)
 
 | Host screen | Client screen |
 |---|---|
