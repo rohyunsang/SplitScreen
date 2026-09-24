@@ -1,12 +1,14 @@
-# Builds the two Fab submission zips without local/generated folders.
+# Builds the Fab submission zips without local/generated folders.
 #
-#   powershell -ExecutionPolicy Bypass -File Tools\PackageForFab.ps1 [-OutDir D:\FabUpload]
+#   powershell -ExecutionPolicy Bypass -File Tools\PackageForFab.ps1 [-OutDir D:\FabUpload] [-IncludePlugin]
 #
-#   DynamicSplitScreen_Plugin.zip          -> the plugin (Source, Content, Config, .uplugin)
-#   DynamicSplitScreen_ExampleProject.zip  -> the example project (with the plugin inside)
+#   DynamicSplitScreen_Plugin.zip          -> the plugin (Source, Content, Config, .uplugin) for the Fab upload
+#   DynamicSplitScreen_ExampleProject.zip  -> the example project. Without -IncludePlugin the plugin is left out:
+#                                             users install it from Fab into the engine first (it is a paid product).
 
 param(
-    [string]$OutDir = (Join-Path $PSScriptRoot "..\..\DynamicSplitScreen_FabUpload")
+    [string]$OutDir = (Join-Path $PSScriptRoot "..\..\DynamicSplitScreen_FabUpload"),
+    [switch]$IncludePlugin
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,31 +31,36 @@ function Assert-Clean([string]$Root) {
     if ($bad) { throw "Excluded folders found in package: $($bad.FullName -join ', ')" }
 }
 
+function New-Zip([string]$Source, [string]$Zip) {
+    if (Test-Path $Zip) { Remove-Item $Zip -Force }
+    Compress-Archive -Path $Source -DestinationPath $Zip
+}
+
 if (Test-Path $Staging) { Remove-Item $Staging -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $Staging | Out-Null
 
 # ── Plugin ──
+$PluginSource = Join-Path $ProjectRoot "Plugins\DynamicSplitScreen"
 $PluginStage = Join-Path $Staging "Plugin\DynamicSplitScreen"
-Copy-Clean (Join-Path $ProjectRoot "Plugins\DynamicSplitScreen") $PluginStage
+Copy-Clean $PluginSource $PluginStage
 Assert-Clean $PluginStage
-$PluginZip = Join-Path $OutDir "DynamicSplitScreen_Plugin.zip"
-if (Test-Path $PluginZip) { Remove-Item $PluginZip -Force }
-Compress-Archive -Path $PluginStage -DestinationPath $PluginZip
+New-Zip $PluginStage (Join-Path $OutDir "DynamicSplitScreen_Plugin.zip")
 
 # ── Example project ──
 $ProjectStage = Join-Path $Staging "Project\DynamicSplitScreenExample"
-Copy-Clean $ProjectRoot $ProjectStage @("Tools", "Docs")
+$ProjectExtra = @((Join-Path $ProjectRoot "Tools"), (Join-Path $ProjectRoot "Docs"))
+if (-not $IncludePlugin) { $ProjectExtra += $PluginSource }
+Copy-Clean $ProjectRoot $ProjectStage $ProjectExtra
 Assert-Clean $ProjectStage
+if (-not $IncludePlugin -and (Test-Path (Join-Path $ProjectStage "Plugins\DynamicSplitScreen"))) { throw "Plugin was not excluded" }
 
 # Editor-only experimental MCP plugins are a local dev convenience; they are not part of the product
 $DevOnlyPlugins = @("ModelContextProtocol", "MCPClientToolset", "AllToolsets")
 $UProjectPath = Join-Path $ProjectStage "SplitScreen.uproject"
 $UProject = Get-Content $UProjectPath -Raw | ConvertFrom-Json
 $UProject.Plugins = @($UProject.Plugins | Where-Object { $DevOnlyPlugins -notcontains $_.Name })
-$UProject | ConvertTo-Json -Depth 10 | Set-Content $UProjectPath -Encoding utf8
-$ProjectZip = Join-Path $OutDir "DynamicSplitScreen_ExampleProject.zip"
-if (Test-Path $ProjectZip) { Remove-Item $ProjectZip -Force }
-Compress-Archive -Path $ProjectStage -DestinationPath $ProjectZip
+[System.IO.File]::WriteAllText($UProjectPath, ($UProject | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding $false))
+New-Zip $ProjectStage (Join-Path $OutDir "DynamicSplitScreen_ExampleProject.zip")
 
 Remove-Item $Staging -Recurse -Force
 
