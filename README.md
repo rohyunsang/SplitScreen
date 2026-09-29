@@ -1,10 +1,10 @@
 # Dynamic Split Screen
 
-Two-player **online** co-op split screen for Unreal Engine 5.8, in the spirit of *It Takes Two*.
+Two-player **online** co-op split screen for Unreal Engine 5.5 – 5.8, in the spirit of *It Takes Two*.
 Both players see both views: their own character on one half and the other player's live camera
 on the other half. Level volumes switch the screen between split and full view.
 
-- Unreal Engine **5.8** · Win64 · Listen server, 2 players · Network replicated
+- Unreal Engine **5.5, 5.6, 5.7, 5.8** · Win64 · Listen server, 2 players · Network replicated
 - Runtime module: `DynamicSplitScreen` · no third-party dependencies
 - Video: https://www.youtube.com/watch?v=Sr370iMZrtE
 - PDF manual: [Docs/DynamicSplitScreen_Manual.pdf](Docs/DynamicSplitScreen_Manual.pdf)
@@ -48,7 +48,7 @@ Engine modules used: Core, CoreUObject, Engine, RenderCore, Slate, SlateCore.
 
 The example project does not contain the plugin itself.
 
-1. Install **Dynamic Split Screen** from Fab into Unreal Engine 5.8 (see Installation, step 1).
+1. Install **Dynamic Split Screen** from Fab into Unreal Engine 5.8 (see Installation, step 1). The example project is saved with 5.8; the plugin itself supports 5.5 – 5.8.
 2. The example has a small C++ game module, so Visual Studio 2022 with the *Game development with C++*
    workload is required. When you open the project, click **Yes** to build the missing module.
 3. Open `SplitScreen.uproject`. The demo map `/Game/DynamicSplitScreenDemo/Maps/DynamicSplitScreenMap` opens.

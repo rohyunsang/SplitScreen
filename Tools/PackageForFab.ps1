@@ -2,13 +2,14 @@
 #
 #   powershell -ExecutionPolicy Bypass -File Tools\PackageForFab.ps1 [-OutDir D:\FabUpload] [-IncludePlugin]
 #
-#   DynamicSplitScreen_Plugin.zip          -> the plugin (Source, Content, Config, .uplugin) for the Fab upload
+#   DynamicSplitScreen_UE<ver>.zip         -> the plugin (Source, Content, Config, .uplugin) per engine version, for Fab
 #   DynamicSplitScreen_ExampleProject.zip  -> the example project. Without -IncludePlugin the plugin is left out:
 #                                             users install it from Fab into the engine first (it is a paid product).
 
 param(
     [string]$OutDir = (Join-Path $PSScriptRoot "..\..\DynamicSplitScreen_FabUpload"),
-    [switch]$IncludePlugin
+    [switch]$IncludePlugin,
+    [string[]]$EngineVersions = @("5.5", "5.6", "5.7", "5.8")
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,12 +40,20 @@ function New-Zip([string]$Source, [string]$Zip) {
 if (Test-Path $Staging) { Remove-Item $Staging -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $Staging | Out-Null
 
-# ── Plugin ──
+# ── Plugin: one zip per engine version ──
+# Fab requires the .uplugin "EngineVersion" to match the engine the file is meant for, so each supported
+# version gets its own copy. Source and content are identical (content is saved in the oldest version).
 $PluginSource = Join-Path $ProjectRoot "Plugins\DynamicSplitScreen"
-$PluginStage = Join-Path $Staging "Plugin\DynamicSplitScreen"
-Copy-Clean $PluginSource $PluginStage
-Assert-Clean $PluginStage
-New-Zip $PluginStage (Join-Path $OutDir "DynamicSplitScreen_Plugin.zip")
+foreach ($Version in $EngineVersions) {
+    $PluginStage = Join-Path $Staging "Plugin_$Version\DynamicSplitScreen"
+    Copy-Clean $PluginSource $PluginStage
+    Assert-Clean $PluginStage
+    $UPluginPath = Join-Path $PluginStage "DynamicSplitScreen.uplugin"
+    $UPlugin = [System.IO.File]::ReadAllText($UPluginPath)
+    $UPlugin = [regex]::Replace($UPlugin, '"EngineVersion":\s*"[^"]*"', "`"EngineVersion`": `"$Version.0`"")
+    [System.IO.File]::WriteAllText($UPluginPath, $UPlugin, (New-Object System.Text.UTF8Encoding $false))
+    New-Zip $PluginStage (Join-Path $OutDir "DynamicSplitScreen_UE$Version.zip")
+}
 
 # ── Example project ──
 $ProjectStage = Join-Path $Staging "Project\DynamicSplitScreenExample"

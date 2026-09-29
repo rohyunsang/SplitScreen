@@ -29,6 +29,31 @@
 #include "Math/InverseRotationMatrix.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Package.h"	// GetTransientPackage
+#include "ContentStreaming.h"
+#include "Runtime/Launch/Resources/Version.h"
+
+// Engine APIs used by the custom Draw() changed across 5.x; keep one source for every supported version.
+#define DSS_ENGINE_AT_LEAST(Minor) (ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= (Minor)))
+
+namespace DynamicSplitScreenCompat
+{
+	/** Registers a rendered view with texture streaming (otherwise mips never load for that view). */
+	static void AddStreamingView(UWorld& World, const FSceneView& View)
+	{
+#if DSS_ENGINE_AT_LEAST(8)
+		AddStreamingViewInfo(World, View);
+#else
+		// What UGameViewportClient::Draw did before AddStreamingViewInfo existed
+		const float StreamingScale = 1.f / FMath::Clamp<float>(View.LODDistanceFactor, .1f, 1.f);
+		IStreamingManager::Get().AddViewInformation(
+			View.ViewMatrices.GetViewOrigin(),
+			View.UnscaledViewRect.Width(),
+			View.UnscaledViewRect.Width() * View.ViewMatrices.GetProjectionMatrix().M[0][0],
+			StreamingScale);
+		World.ViewLocationsRenderedLastFrame.Add(View.ViewMatrices.GetViewOrigin());
+#endif
+	}
+}
 
 UDynamicSplitScreenViewportClient::UDynamicSplitScreenViewportClient(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -343,7 +368,7 @@ void UDynamicSplitScreenViewportClient::Draw(FViewport* InViewport, FCanvas* Sce
 
 	MainSceneView->CameraConstrainedViewRect = MainSceneView->UnscaledViewRect;
 	MainLocalPlayer->LastViewLocation = OutViewLocation;
-	AddStreamingViewInfo(*MyWorld, *MainSceneView);	// texture streaming, otherwise mips never load
+	DynamicSplitScreenCompat::AddStreamingView(*MyWorld, *MainSceneView);	// texture streaming, otherwise mips never load
 	MyWorld->LastRenderTime = MyWorld->GetTimeSeconds();
 	UpdateAudioListener(MyWorld, MainPC, MainSceneView);
 
@@ -359,7 +384,7 @@ void UDynamicSplitScreenViewportClient::Draw(FViewport* InViewport, FCanvas* Sce
 			}
 
 			SecondarySceneView->CameraConstrainedViewRect = SecondarySceneView->UnscaledViewRect;
-			AddStreamingViewInfo(*MyWorld, *SecondarySceneView);
+			DynamicSplitScreenCompat::AddStreamingView(*MyWorld, *SecondarySceneView);
 		}
 	}
 
@@ -371,7 +396,11 @@ void UDynamicSplitScreenViewportClient::Draw(FViewport* InViewport, FCanvas* Sce
 		bAnyPlayerCameraCut = CamMgr->bGameCameraCutThisFrame;
 		CamMgr->bGameCameraCutThisFrame = false;
 	}
+#if DSS_ENGINE_AT_LEAST(8)
 	InViewport->SetCameraCut(bAnyPlayerCameraCut);
+#else
+	(void)bAnyPlayerCameraCut;
+#endif
 
 	// ===== FinalizeViews =====
 	{
@@ -448,7 +477,11 @@ void UDynamicSplitScreenViewportClient::Draw(FViewport* InViewport, FCanvas* Sce
 		if (DebugCanvas)
 		{
 			DebugCanvas->PushAbsoluteTransform(FTranslationMatrix(CanvasOrigin));
+#if DSS_ENGINE_AT_LEAST(7)
 			UDebugDrawService::Draw(ViewFamily.EngineShowFlags, InViewport, MainSceneView, DebugCanvas, DebugCanvasObject, MainPC);
+#else
+			UDebugDrawService::Draw(ViewFamily.EngineShowFlags, InViewport, MainSceneView, DebugCanvas, DebugCanvasObject);
+#endif
 			DebugCanvas->PopTransform();
 		}
 
