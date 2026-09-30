@@ -32,9 +32,22 @@ function Assert-Clean([string]$Root) {
     if ($bad) { throw "Excluded folders found in package: $($bad.FullName -join ', ')" }
 }
 
+# Compress-Archive (Windows PowerShell 5.1) stores entry paths with backslashes, which break on
+# macOS / Linux unzip. Write the zip ourselves with "/" separators; the source folder is the top entry.
+Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 function New-Zip([string]$Source, [string]$Zip) {
     if (Test-Path $Zip) { Remove-Item $Zip -Force }
-    Compress-Archive -Path $Source -DestinationPath $Zip
+    $Source = (Resolve-Path $Source).Path.TrimEnd('\')
+    $Parent = Split-Path $Source -Parent
+    $Archive = [System.IO.Compression.ZipFile]::Open($Zip, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($File in Get-ChildItem $Source -Recurse -File) {
+            $Entry = $File.FullName.Substring($Parent.Length + 1).Replace('\', '/')
+            [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($Archive, $File.FullName, $Entry, [System.IO.Compression.CompressionLevel]::Optimal)
+        }
+    } finally {
+        $Archive.Dispose()
+    }
 }
 
 if (Test-Path $Staging) { Remove-Item $Staging -Recurse -Force }
